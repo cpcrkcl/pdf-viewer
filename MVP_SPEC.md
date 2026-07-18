@@ -14,7 +14,7 @@
 
 PDFViewer is an original, native macOS PDF reader and page organizer for people who need to safely read, search, rearrange, and export local PDF documents.
 
-The MVP establishes a dependable reading and page-organization workflow. It does not attempt to deliver the broader editing, conversion, signing, redaction, OCR, collaboration, or AI feature set described as future work in the source game plan.
+The MVP establishes a dependable reading and page-organization workflow. It does not attempt to deliver the broader editing, conversion, signing, redaction, OCR, or collaboration feature set described as future work in the source game plan. AI document-assistant features are a permanent product exclusion rather than future work.
 
 ### Intended audience
 
@@ -56,6 +56,7 @@ The words **must**, **must not**, **should**, and **may** express requirement st
 - **Export:** Create a new PDF at a user-selected output location. In the MVP, export never means overwriting or replacing the source PDF.
 - **Save:** This term is not used for a distinct MVP action. User-facing language and future implementation tasks must use **Export** when creating output.
 - **Page mutation:** Adding, deleting, rotating, reordering, or merging pages in the working document.
+- **Thumbnail sidebar visibility:** A temporary reader presentation preference. Hiding or showing thumbnails must not change page content, working-page order, document revision, or exported output.
 - **Distinct output:** An output whose resolved file location differs from the source PDF's resolved file location.
 - **Textless PDF:** A PDF with no searchable text available to the MVP, including an image-only scan without an existing OCR text layer.
 
@@ -72,6 +73,7 @@ The words **must**, **must not**, **should**, and **may** express requirement st
 | `PRINC-007` | All imported PDFs, their metadata, links, and embedded content must be treated as untrusted input. |
 | `PRINC-008` | PDFViewer must not execute embedded scripts or automatically open embedded or external links. A link may only be opened after an explicit user action. |
 | `PRINC-009` | Future implementation work must use test-first development and must provide actual build, automated-test, and manual-smoke-test evidence before a milestone is accepted. |
+| `PRINC-010` | PDFViewer must not provide AI document assistants, generated summaries, document chat, generative extraction, recommendations, or local or remote inference over document contents. |
 
 ## 5. In-scope MVP requirements
 
@@ -96,8 +98,9 @@ The words **must**, **must not**, **should**, and **may** express requirement st
 | `MVP-014` | Support single-page viewing. | One page is presented as the primary page at a time. |
 | `MVP-015` | Support two-page viewing. | Two adjacent pages can be presented together, with first/last-page edge cases handled without inventing pages. |
 | `MVP-016` | Support continuous viewing. | Pages can be scrolled in their current working order without requiring a separate page-selection action for every transition. |
-| `MVP-017` | Support Day, Night, and Sepia reading themes. | A user can select each named theme and observe the reading presentation change. |
+| `MVP-017` | Support Day and Night reading themes. | A user can select either theme and observe a clearly distinct reading presentation. |
 | `MVP-018` | Keep presentation state separate from document content. | Changing a theme or viewing mode does not mark the working document as modified, alter page contents, or affect exported page contents. |
+| `MVP-019` | Keep reader and organizer actions usable across supported window sizes. | Every committed reader and organizer action remains discoverable and operable from a 720×520 content area through full screen. Adaptive overflow menus are permitted, but controls must not overlap or use ambiguous truncated action labels. |
 
 ### 5.3 Search
 
@@ -143,9 +146,12 @@ These workflows define product acceptance behavior for future implementation. Th
 2. Open the PDF.
 3. Navigate by thumbnail and page number.
 4. Exercise single-page, two-page, and continuous viewing.
-5. Exercise Day, Night, and Sepia themes.
-6. Close the PDF.
-7. Verify the source hash is unchanged and no presentation action was treated as a document mutation.
+5. Exercise Day and Night themes.
+6. Resize the content area through 720×520, 800×550, 900×600, 1100×720, and full screen.
+7. Hide, restore, and resize the thumbnail sidebar.
+8. Verify that every reading, navigation, search, and page action remains reachable without overlapping controls or ambiguous truncated labels.
+9. Close the PDF.
+10. Verify the source hash is unchanged and no presentation or sidebar-visibility action was treated as a document mutation.
 
 ### `FLOW-002`: Reopen from Recent Documents
 
@@ -180,7 +186,8 @@ These workflows define product acceptance behavior for future implementation. Th
 5. Undo each operation in reverse order and verify the original working state is restored.
 6. Redo each operation and verify the edited working state is restored.
 7. Undo once, perform a new mutation, and verify the abandoned redo branch is unavailable.
-8. Verify the source PDF's hash is unchanged.
+8. Open the organizer at a 720×520 reader content size and verify every organizer action remains readable and accessible.
+9. Verify the source PDF's hash is unchanged.
 
 ### `FLOW-006`: Add and merge pages
 
@@ -237,9 +244,10 @@ The following rules apply across all MVP requirements and acceptance workflows:
 8. Cancellation and failure must not produce a false success state, and temporary artifacts must be cleaned up when they are no longer needed.
 9. Imported metadata, scripts, links, and embedded content are untrusted.
 10. Embedded scripts are not executed.
-11. Links are not opened without an explicit user action.
-12. Page mutations remain reversible for the active working session.
-13. Errors must be understandable and recoverable; they must not silently discard or modify a source file.
+11. Hiding, showing, or resizing the thumbnail sidebar is presentation state only and must not modify or dirty the working document.
+12. Links are not opened without an explicit user action.
+13. Page mutations remain reversible for the active working session.
+14. Errors must be understandable and recoverable; they must not silently discard or modify a source file.
 
 ## 8. Deferred features and non-goals
 
@@ -253,12 +261,19 @@ The following capabilities are explicitly outside the MVP. They must not appear 
 | `DEF-004` | Fillable forms | Form completion, validation, reset, and flattening are not included. |
 | `DEF-005` | Visual or cryptographic signatures | The MVP provides neither signature placement nor certificate-based signing. It makes no digital-signature claims. |
 | `DEF-006` | Redaction | The MVP does not mark, preview, cover, or permanently remove content. |
-| `DEF-007` | OCR and scan enhancement | The MVP does not recognize text in page images or enhance scanned pages. |
+| `DEF-007` | OCR and scan enhancement | The MVP does not recognize text in page images or enhance scanned pages. Any future OCR decision is separate from AI document-assistant features, remains local-only, and requires a separately approved milestone. |
 | `DEF-008` | Compression optimization | The MVP defines no compression profiles or output-size promises. |
 | `DEF-009` | Cloud synchronization | The MVP has no cloud storage or synchronization. |
 | `DEF-010` | Collaboration | The MVP has no shared editing, commenting, or presence features. |
-| `DEF-011` | AI document features | The MVP has no AI summaries, chat, extraction, or remote inference. |
 | `DEF-012` | Annotations | Highlighting search results is temporary reader presentation, not creation or editing of PDF annotations. |
+
+### Permanent product exclusions
+
+| ID | Excluded capability | Product boundary |
+| --- | --- | --- |
+| `EXCL-001` | AI document features | PDFViewer will not provide AI summaries, document chat, generative extraction, recommendations, or local or remote inference over PDF contents. PDF contents, derived text, metadata, thumbnails, and page images must never be sent to an inference service. |
+
+`DEF-011` is retired and reserved. It is superseded by `EXCL-001` and must not be reused for another capability.
 
 ## 9. Source-to-requirement traceability
 
@@ -272,7 +287,7 @@ Each section 1 source bullet has one canonical requirement anchor. Related requi
 | Recent documents | `MVP-004` | `MVP-005` |
 | Page thumbnails and page navigation | `MVP-011` | `MVP-010`, `MVP-012`, `MVP-013` |
 | Single-page, two-page, and continuous viewing | `MVP-014` | `MVP-015`, `MVP-016` |
-| Day, Night, and Sepia reading themes | `MVP-017` | `MVP-018` |
+| Day and Night reading themes | `MVP-017` | `MVP-018` |
 | Text search within a PDF | `MVP-020` | `MVP-021` through `MVP-024` |
 | Add, delete, rotate, reorder, extract, and merge pages | `MVP-030` | `MVP-031` through `MVP-037` |
 | Export the result as a new PDF | `MVP-040` | `MVP-041`, `MVP-044` |
@@ -293,7 +308,7 @@ Each section 1 source bullet has one canonical requirement anchor. Related requi
 | Compression optimization | `DEF-008` |
 | Cloud sync | `DEF-009` |
 | Collaboration | `DEF-010` |
-| AI document features | `DEF-011` |
+| AI document features | `EXCL-001` |
 
 `DEF-012` makes the absence of annotations explicit because annotations are not included in the section 1 MVP list and later work must not infer them from temporary search highlighting.
 
@@ -301,7 +316,7 @@ Each section 1 source bullet has one canonical requirement anchor. Related requi
 
 This phase introduces no code-level APIs, data schemas, Swift types, application architecture, or project configuration.
 
-The `PRINC-*`, `MVP-*`, `FLOW-*`, and `DEF-*` identifiers are the stable product interface between later planning, implementation tasks, automated tests, manual smoke tests, release documentation, and scope review. Later work may add traceability details but must not silently change the meaning of an existing identifier.
+The `PRINC-*`, `MVP-*`, `FLOW-*`, `DEF-*`, and `EXCL-*` identifiers are the stable product interface between later planning, implementation tasks, automated tests, manual smoke tests, release documentation, and scope review. Later work may add traceability details but must not silently change the meaning of an existing identifier.
 
 ## 11. MVP scope approval
 
@@ -313,6 +328,7 @@ Section 1 is scope-approved when all of the following remain true:
 - [x] Every explicitly deferred section 1 feature is listed as out of scope.
 - [x] Annotations are also excluded from the MVP.
 - [x] No MVP requirement depends on OCR, conversion helpers, cloud services, forms, annotations, signatures, redaction, compression, collaboration, or AI features.
+- [x] AI document-assistant features and inference over document contents are permanently excluded from the product.
 - [x] Every page mutation is reversible during the active session.
 - [x] Normal workflows never overwrite the source PDF.
 - [x] Export and extraction produce distinct output.
