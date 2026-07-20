@@ -4,6 +4,13 @@ import XCTest
 
 @MainActor
 final class ReaderStateTests: XCTestCase {
+    func testReaderOffersEveryCommittedTheme() {
+        XCTAssertEqual(
+            ReaderTheme.allCases.map(\.title),
+            ["Day", "Night", "Sepia"]
+        )
+    }
+
     func testNavigationAcceptsValidPagesAndRejectsInvalidPages() {
         let state = ReaderState(pageCount: 5)
 
@@ -30,6 +37,7 @@ final class ReaderStateTests: XCTestCase {
         state.displayMode = .twoPage
         state.theme = .night
         state.displayMode = .continuous
+        state.theme = .sepia
         state.theme = .day
 
         XCTAssertFalse(state.isDocumentDirty)

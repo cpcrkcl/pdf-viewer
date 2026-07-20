@@ -41,9 +41,63 @@ enum PDFOutputProtection: Equatable {
     case reuseSessionPassword
 }
 
+/// Output-size profiles applied while writing the export. Compression never
+/// changes page count, order, rotations, searchable text, or annotations;
+/// only embedded image encoding may change.
+enum PDFExportCompression: String, CaseIterable, Identifiable {
+    case standard
+    case reducedSize
+    case compact
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .standard:
+            "Standard"
+        case .reducedSize:
+            "Reduced Size"
+        case .compact:
+            "Compact"
+        }
+    }
+
+    var summary: String {
+        switch self {
+        case .standard:
+            "Keeps the original image quality."
+        case .reducedSize:
+            "Re-encodes embedded images as JPEG."
+        case .compact:
+            "Re-encodes images as JPEG and downsamples oversized images for screen reading."
+        }
+    }
+
+    var writeOptions: [PDFDocumentWriteOption: Any] {
+        switch self {
+        case .standard:
+            [:]
+        case .reducedSize:
+            [.saveImagesAsJPEGOption: true]
+        case .compact:
+            [
+                .saveImagesAsJPEGOption: true,
+                .optimizeImagesForScreenOption: true,
+            ]
+        }
+    }
+}
+
 struct PDFExportResult: Equatable {
     let url: URL
     let pageCount: Int
+    let fileSizeInBytes: Int
+
+    init(url: URL, pageCount: Int, fileSizeInBytes: Int = 0) {
+        self.url = url
+        self.pageCount = pageCount
+        self.fileSizeInBytes = fileSizeInBytes
+    }
 }
 
 @MainActor
@@ -60,7 +114,8 @@ protocol PDFExporting {
         to destinationURL: URL,
         protection: PDFOutputProtection,
         sessionPassword: String?,
-        accessPermissions: PDFAccessPermissions
+        accessPermissions: PDFAccessPermissions,
+        compression: PDFExportCompression
     ) throws -> PDFExportResult
 }
 
@@ -71,7 +126,8 @@ extension PDFExporting {
         to destinationURL: URL,
         protection: PDFOutputProtection,
         sessionPassword: String?,
-        accessPermissions: PDFAccessPermissions
+        accessPermissions: PDFAccessPermissions,
+        compression: PDFExportCompression
     ) throws -> PDFExportResult {
         guard protection == .none else {
             throw PDFExportError.encryptedOutputRequired
@@ -106,7 +162,8 @@ struct PDFExporter: PDFExporting {
             to: destinationURL,
             protection: .none,
             sessionPassword: nil,
-            accessPermissions: document.accessPermissions
+            accessPermissions: document.accessPermissions,
+            compression: .standard
         )
     }
 
@@ -116,7 +173,8 @@ struct PDFExporter: PDFExporting {
         to destinationURL: URL,
         protection: PDFOutputProtection,
         sessionPassword: String?,
-        accessPermissions: PDFAccessPermissions
+        accessPermissions: PDFAccessPermissions,
+        compression: PDFExportCompression
     ) throws -> PDFExportResult {
         guard document.pageCount > 0 else {
             throw PDFExportError.emptyDocument
@@ -166,23 +224,19 @@ struct PDFExporter: PDFExporting {
         }
 
         let expectedSnapshot = validationSnapshot(of: document)
-        let didWrite: Bool
+        var writeOptions = compression.writeOptions
         switch protection {
         case .none:
-            didWrite = document.write(to: temporaryURL)
+            break
         case .reuseSessionPassword:
             guard let sessionPassword else {
                 throw PDFExportError.missingSessionPassword
             }
-            didWrite = document.write(
-                to: temporaryURL,
-                withOptions: [
-                    .ownerPasswordOption: sessionPassword,
-                    .userPasswordOption: sessionPassword,
-                    .accessPermissionsOption: NSNumber(value: accessPermissions.rawValue),
-                ]
-            )
+            writeOptions[.ownerPasswordOption] = sessionPassword
+            writeOptions[.userPasswordOption] = sessionPassword
+            writeOptions[.accessPermissionsOption] = NSNumber(value: accessPermissions.rawValue)
         }
+        let didWrite = document.write(to: temporaryURL, withOptions: writeOptions)
 
         guard didWrite else {
             throw PDFExportError.couldNotWriteTemporaryFile
@@ -217,7 +271,11 @@ struct PDFExporter: PDFExporting {
             throw PDFExportError.couldNotReopenExport
         }
 
-        return PDFExportResult(url: destinationURL, pageCount: document.pageCount)
+        return PDFExportResult(
+            url: destinationURL,
+            pageCount: document.pageCount,
+            fileSizeInBytes: stagedData.count
+        )
     }
 
     private func writeAtomically(_ data: Data, to destinationURL: URL) -> Bool {
@@ -307,7 +365,26 @@ struct PDFExporter: PDFExporting {
                                 type: annotation.type,
                                 bounds: annotation.bounds,
                                 contents: annotation.contents,
-                                identifier: AnnotationIdentifier(annotation: annotation)?.pdfName
+                                identifier: AnnotationIdentifier(annotation: annotation)?.pdfName,
+                                visualSignatureData: VisualSignatureAnnotation.imageData(
+                                    from: annotation
+                                ),
+                                formFieldName: annotation.fieldName,
+                                formFieldType: annotation.value(
+                                    forAnnotationKey: .widgetFieldType
+                                ) as? String,
+                                formValue: annotation.widgetStringValue,
+                                formDefaultValue: annotation.widgetDefaultStringValue,
+                                formButtonState: annotation.type == PDFAnnotationSubtype.widget.pdfTypeName
+                                    ? annotation.buttonWidgetState.rawValue
+                                    : nil,
+                                formChoices: annotation.choices,
+                                formExportValues: annotation.values,
+                                formFlags: (
+                                    annotation.value(forAnnotationKey: .widgetFieldFlags) as? NSNumber
+                                )?.intValue,
+                                formMaximumLength: annotation.maximumLength,
+                                formIsReadOnly: annotation.isReadOnly
                             )
                         }
                 )
@@ -332,4 +409,15 @@ private struct ValidationAnnotation: Equatable {
     let bounds: CGRect
     let contents: String?
     let identifier: String?
+    let visualSignatureData: Data?
+    let formFieldName: String?
+    let formFieldType: String?
+    let formValue: String?
+    let formDefaultValue: String?
+    let formButtonState: Int?
+    let formChoices: [String]?
+    let formExportValues: [String]?
+    let formFlags: Int?
+    let formMaximumLength: Int
+    let formIsReadOnly: Bool
 }

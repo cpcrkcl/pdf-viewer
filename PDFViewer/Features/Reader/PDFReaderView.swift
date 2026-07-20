@@ -13,17 +13,25 @@ struct PDFReaderView: NSViewRepresentable {
     let resolvedBookmarks: [ResolvedPageBookmark]
     let availablePageIDs: Set<WorkingPageID>
     let zoomRequest: ReaderZoomRequest
+    let printRequestSequence: Int
     let highlightedSelections: [PDFSelection]
     let activeSearchSelection: PDFSelection?
     let searchNavigationRevision: Int
     let annotationTool: AnnotationTool?
     let selectedAnnotation: SelectedAnnotation?
     let clearAnnotationSelectionRevision: Int
+    let isRedactionModeActive: Bool
+    let redactionRegions: [PDFRedactionRegion]
     let onTextMarkupRegionsChanged: ([TextMarkupRegion]) -> Void
     let onTextSelectionCommitted: () -> Void
     let onInkStroke: (InkStroke) -> Void
     let onTextNotePlacement: (AnnotationPlacement) -> Void
+    let onShapeAnnotation: (ShapeAnnotationPlacement) -> Void
+    let onBuiltInStampPlacement: (AnnotationPlacement) -> Void
+    let onVisualSignaturePlacement: (AnnotationPlacement) -> Void
     let onAnnotationSelection: (SelectedAnnotation?) -> Void
+    let onAnnotationMove: (SelectedAnnotation, CGSize) -> Void
+    let onRedactionRegion: (PDFRedactionRegion) -> Void
     let onSidebarTabChange: (ReaderSidebarTab) -> Void
     let onThumbnailNavigation: (Int) -> Void
     let onOutlineNavigation: (WorkingPageID) -> Void
@@ -89,6 +97,7 @@ struct PDFReaderView: NSViewRepresentable {
 
         applySearch(to: pdfView, coordinator: coordinator)
         applyAnnotationSelection(to: pdfView, coordinator: coordinator)
+        applyPrintRequest(to: pdfView, coordinator: coordinator)
 
         if coordinator.lastClearAnnotationSelectionRevision != clearAnnotationSelectionRevision {
             coordinator.lastClearAnnotationSelectionRevision = clearAnnotationSelectionRevision
@@ -114,10 +123,18 @@ struct PDFReaderView: NSViewRepresentable {
 
     private func configureAnnotationInteraction(_ pdfView: InteractivePDFView) {
         pdfView.annotationTool = annotationTool
+        pdfView.selectedAnnotation = selectedAnnotation
         pdfView.onTextSelectionCommitted = onTextSelectionCommitted
         pdfView.onInkStroke = onInkStroke
         pdfView.onTextNotePlacement = onTextNotePlacement
+        pdfView.onShapeAnnotation = onShapeAnnotation
+        pdfView.onBuiltInStampPlacement = onBuiltInStampPlacement
+        pdfView.onVisualSignaturePlacement = onVisualSignaturePlacement
         pdfView.onAnnotationSelection = onAnnotationSelection
+        pdfView.onAnnotationMove = onAnnotationMove
+        pdfView.isRedactionModeActive = isRedactionModeActive
+        pdfView.redactionRegions = redactionRegions
+        pdfView.onRedactionRegion = onRedactionRegion
     }
 
     private func applyAnnotationSelection(
@@ -142,6 +159,18 @@ struct PDFReaderView: NSViewRepresentable {
             }
         }
         pdfView.needsDisplay = true
+    }
+
+    private func applyPrintRequest(to pdfView: PDFView, coordinator: Coordinator) {
+        guard coordinator.lastPrintRequestSequence != printRequestSequence else {
+            return
+        }
+        coordinator.lastPrintRequestSequence = printRequestSequence
+
+        guard pdfView.document != nil else {
+            return
+        }
+        pdfView.print(with: .shared, autoRotate: true)
     }
 
     private func applyDisplayMode(to pdfView: PDFView) {
@@ -222,6 +251,7 @@ struct PDFReaderView: NSViewRepresentable {
         var lastZoomSequence = -1
         var lastSearchNavigationRevision = -1
         var lastClearAnnotationSelectionRevision = -1
+        var lastPrintRequestSequence: Int
         var lastSelectedAnnotation: SelectedAnnotation?
         var lastHighlightedSelections: [PDFSelection] = []
         var pendingProgrammaticPageIndex: Int?
@@ -230,6 +260,9 @@ struct PDFReaderView: NSViewRepresentable {
 
         init(parent: PDFReaderView) {
             self.parent = parent
+            // A print request made before this reader existed (or before a
+            // document swap rebuilt it) must not open a print panel now.
+            self.lastPrintRequestSequence = parent.printRequestSequence
         }
 
         func observe(_ pdfView: PDFView) {
@@ -1159,6 +1192,24 @@ final class TrackingPDFThumbnailView: PDFThumbnailView {
     }
 }
 
+private final class PDFInteractionPolicyDelegate: NSObject, @MainActor PDFViewDelegate {
+    weak var owner: InteractivePDFView?
+
+    init(owner: InteractivePDFView) {
+        self.owner = owner
+    }
+
+    @MainActor
+    func pdfViewWillClick(onLink sender: PDFView, with url: URL) {
+        owner?.confirmOpeningExternalLink(url)
+    }
+
+    @MainActor
+    func pdfViewPerformPrint(_ sender: PDFView) {
+        owner?.blockEmbeddedPrintRequest()
+    }
+}
+
 final class InteractivePDFView: PDFView {
     override var preservesContentDuringLiveResize: Bool {
         true
@@ -1168,24 +1219,54 @@ final class InteractivePDFView: PDFView {
         didSet {
             if annotationTool != oldValue {
                 cancelInkPreview()
+                cancelShapePreview()
                 resetSelectGesture()
                 window?.invalidateCursorRects(for: self)
             }
         }
     }
+    var selectedAnnotation: SelectedAnnotation?
+    var isRedactionModeActive = false {
+        didSet {
+            guard isRedactionModeActive != oldValue else {
+                return
+            }
+            cancelRedactionPreview()
+            redactionOverlayView.isHidden = !isRedactionModeActive
+            window?.invalidateCursorRects(for: self)
+        }
+    }
+    var redactionRegions: [PDFRedactionRegion] = [] {
+        didSet {
+            redactionOverlayView.regions = redactionRegions
+            redactionOverlayView.needsDisplay = true
+        }
+    }
     var onInkStroke: ((InkStroke) -> Void)?
     var onTextSelectionCommitted: (() -> Void)?
     var onTextNotePlacement: ((AnnotationPlacement) -> Void)?
+    var onShapeAnnotation: ((ShapeAnnotationPlacement) -> Void)?
+    var onBuiltInStampPlacement: ((AnnotationPlacement) -> Void)?
+    var onVisualSignaturePlacement: ((AnnotationPlacement) -> Void)?
     var onAnnotationSelection: ((SelectedAnnotation?) -> Void)?
+    var onAnnotationMove: ((SelectedAnnotation, CGSize) -> Void)?
+    var onRedactionRegion: ((PDFRedactionRegion) -> Void)?
 
     private var inkPageIndex: Int?
     private var inkPagePoints: [CGPoint] = []
     private var inkViewPoints: [CGPoint] = []
     private var inkPreviewPath = CGMutablePath()
     private let inkPreviewLayer = CAShapeLayer()
+    private var shapeStart: AnnotationPlacement?
+    private var shapeStartViewPoint: CGPoint?
+    private let shapePreviewLayer = CAShapeLayer()
     private var selectMouseDownPoint: CGPoint?
+    private var selectPageStartPoint: AnnotationPlacement?
     private var pendingClickedAnnotation: SelectedAnnotation?
     private var selectGestureDidDrag = false
+    private var redactionStart: AnnotationPlacement?
+    private lazy var redactionOverlayView = RedactionOverlayView(pdfView: self)
+    private lazy var interactionPolicyDelegate = PDFInteractionPolicyDelegate(owner: self)
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -1199,12 +1280,37 @@ final class InteractivePDFView: PDFView {
             "bounds": NSNull(),
             "position": NSNull(),
         ]
+        shapePreviewLayer.fillColor = NSColor.clear.cgColor
+        shapePreviewLayer.strokeColor = NSColor.controlAccentColor.cgColor
+        shapePreviewLayer.lineWidth = 2
+        shapePreviewLayer.lineDashPattern = [6, 4]
+        shapePreviewLayer.actions = inkPreviewLayer.actions
+        redactionOverlayView.frame = bounds
+        redactionOverlayView.autoresizingMask = [.width, .height]
+        redactionOverlayView.isHidden = true
+        addSubview(redactionOverlayView, positioned: .above, relativeTo: nil)
+        delegate = interactionPolicyDelegate
+    }
+
+    override func layout() {
+        super.layout()
+        redactionOverlayView.frame = bounds
+        redactionOverlayView.needsDisplay = true
+    }
+
+    override func scrollWheel(with event: NSEvent) {
+        super.scrollWheel(with: event)
+        redactionOverlayView.needsDisplay = true
     }
 
     override func resetCursorRects() {
         super.resetCursorRects()
+        if isRedactionModeActive {
+            addCursorRect(bounds, cursor: .crosshair)
+            return
+        }
         switch annotationTool {
-        case .freehand, .textNote:
+        case .freehand, .textNote, .rectangle, .oval, .line, .arrow, .stamp, .signature:
             addCursorRect(bounds, cursor: .crosshair)
         default:
             break
@@ -1212,6 +1318,10 @@ final class InteractivePDFView: PDFView {
     }
 
     override func mouseDown(with event: NSEvent) {
+        if isRedactionModeActive {
+            beginRedaction(at: convert(event.locationInWindow, from: nil))
+            return
+        }
         guard let annotationTool else {
             super.mouseDown(with: event)
             return
@@ -1226,17 +1336,36 @@ final class InteractivePDFView: PDFView {
                 return
             }
             onTextNotePlacement?(placement)
+        case .rectangle, .oval, .line, .arrow:
+            beginShape(at: viewPoint)
+        case .stamp:
+            guard let placement = annotationPlacement(at: viewPoint) else {
+                return
+            }
+            onBuiltInStampPlacement?(placement)
+        case .signature:
+            guard let placement = annotationPlacement(at: viewPoint) else {
+                return
+            }
+            onVisualSignaturePlacement?(placement)
         case .select:
             selectMouseDownPoint = viewPoint
             pendingClickedAnnotation = annotationSelection(at: viewPoint)
+            selectPageStartPoint = annotationPlacement(at: viewPoint)
             selectGestureDidDrag = false
-            super.mouseDown(with: event)
+            if pendingClickedAnnotation?.isOwnedByPDFViewer != true {
+                super.mouseDown(with: event)
+            }
         case .highlight, .underline, .strikethrough:
             super.mouseDown(with: event)
         }
     }
 
     override func mouseDragged(with event: NSEvent) {
+        if isRedactionModeActive, redactionStart != nil {
+            updateRedactionPreview(at: convert(event.locationInWindow, from: nil))
+            return
+        }
         if annotationTool == .select {
             let viewPoint = convert(event.locationInWindow, from: nil)
             if
@@ -1247,9 +1376,15 @@ final class InteractivePDFView: PDFView {
                 ) >= 3
             {
                 selectGestureDidDrag = true
-                pendingClickedAnnotation = nil
             }
-            super.mouseDragged(with: event)
+            if pendingClickedAnnotation?.isOwnedByPDFViewer != true {
+                super.mouseDragged(with: event)
+            }
+            return
+        }
+
+        if annotationTool?.shapeKind != nil, shapeStart != nil {
+            updateShapePreview(at: convert(event.locationInWindow, from: nil))
             return
         }
 
@@ -1261,17 +1396,44 @@ final class InteractivePDFView: PDFView {
     }
 
     override func mouseUp(with event: NSEvent) {
+        if isRedactionModeActive, redactionStart != nil {
+            finishRedaction(at: convert(event.locationInWindow, from: nil))
+            return
+        }
         if annotationTool == .select {
-            super.mouseUp(with: event)
+            if pendingClickedAnnotation?.isOwnedByPDFViewer != true {
+                super.mouseUp(with: event)
+            }
             let viewPoint = convert(event.locationInWindow, from: nil)
             let movedDistance = selectMouseDownPoint.map {
                 hypot(viewPoint.x - $0.x, viewPoint.y - $0.y)
             } ?? .greatestFiniteMagnitude
-            let clickedAnnotation = !selectGestureDidDrag && movedDistance < 3
-                ? pendingClickedAnnotation
-                : nil
-            onAnnotationSelection?(clickedAnnotation)
+            let clickedAnnotation = pendingClickedAnnotation
+            if
+                selectGestureDidDrag,
+                let clickedAnnotation,
+                clickedAnnotation.isOwnedByPDFViewer,
+                let start = selectPageStartPoint,
+                let end = annotationPlacement(at: viewPoint),
+                end.pageIndex == start.pageIndex
+            {
+                onAnnotationMove?(
+                    clickedAnnotation,
+                    CGSize(
+                        width: end.point.x - start.point.x,
+                        height: end.point.y - start.point.y
+                    )
+                )
+                onAnnotationSelection?(clickedAnnotation)
+            } else {
+                onAnnotationSelection?(!selectGestureDidDrag && movedDistance < 3 ? clickedAnnotation : nil)
+            }
             resetSelectGesture()
+            return
+        }
+
+        if annotationTool?.shapeKind != nil, shapeStart != nil {
+            finishShape(at: convert(event.locationInWindow, from: nil))
             return
         }
 
@@ -1300,6 +1462,133 @@ final class InteractivePDFView: PDFView {
         // Keep the preview visible until the live PDF annotation has been
         // installed so lifting the pointer never produces a blank flash.
         cancelInkPreview()
+    }
+
+    override func cancelOperation(_ sender: Any?) {
+        if shapeStart != nil {
+            cancelShapePreview()
+            return
+        }
+        if redactionStart != nil {
+            cancelRedactionPreview()
+            return
+        }
+        super.cancelOperation(sender)
+    }
+
+    override func keyDown(with event: NSEvent) {
+        guard
+            annotationTool == .select,
+            let selectedAnnotation,
+            selectedAnnotation.isOwnedByPDFViewer
+        else {
+            super.keyDown(with: event)
+            return
+        }
+        let distance: CGFloat = event.modifierFlags.contains(.shift) ? 10 : 1
+        let translation: CGSize
+        switch event.keyCode {
+        case 123:
+            translation = CGSize(width: -distance, height: 0)
+        case 124:
+            translation = CGSize(width: distance, height: 0)
+        case 125:
+            translation = CGSize(width: 0, height: -distance)
+        case 126:
+            translation = CGSize(width: 0, height: distance)
+        default:
+            super.keyDown(with: event)
+            return
+        }
+        onAnnotationMove?(selectedAnnotation, translation)
+    }
+
+    fileprivate func confirmOpeningExternalLink(_ url: URL) {
+        let allowedSchemes = Set(["https", "http", "mailto"])
+        guard
+            let scheme = url.scheme?.lowercased(),
+            allowedSchemes.contains(scheme),
+            let window
+        else {
+            NSSound.beep()
+            return
+        }
+
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Open External Link?"
+        alert.informativeText = "This PDF wants to open:\n\n\(url.absoluteString)\n\nOnly continue if you trust the document and destination."
+        alert.addButton(withTitle: "Open Link")
+        alert.addButton(withTitle: "Cancel")
+        alert.beginSheetModal(for: window) { response in
+            guard response == .alertFirstButtonReturn else {
+                return
+            }
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    fileprivate func blockEmbeddedPrintRequest() {
+        NSSound.beep()
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Embedded Print Request Blocked"
+        alert.informativeText = "For safety, PDFViewer does not let a document start printing. Use File > Print when you want to print."
+        alert.addButton(withTitle: "OK")
+        if let window {
+            alert.beginSheetModal(for: window)
+        } else {
+            alert.runModal()
+        }
+    }
+
+    private func beginRedaction(at viewPoint: CGPoint) {
+        guard let placement = annotationPlacement(at: viewPoint) else {
+            return
+        }
+        redactionStart = placement
+        redactionOverlayView.liveRegion = PDFRedactionRegion(
+            pageIndex: placement.pageIndex,
+            bounds: CGRect(origin: placement.point, size: .zero)
+        )
+        redactionOverlayView.needsDisplay = true
+    }
+
+    private func updateRedactionPreview(at viewPoint: CGPoint) {
+        guard
+            let redactionStart,
+            let current = annotationPlacement(at: viewPoint),
+            current.pageIndex == redactionStart.pageIndex
+        else {
+            return
+        }
+        redactionOverlayView.liveRegion = PDFRedactionRegion(
+            pageIndex: redactionStart.pageIndex,
+            bounds: CGRect(
+                x: redactionStart.point.x,
+                y: redactionStart.point.y,
+                width: current.point.x - redactionStart.point.x,
+                height: current.point.y - redactionStart.point.y
+            )
+        )
+        redactionOverlayView.needsDisplay = true
+    }
+
+    private func finishRedaction(at viewPoint: CGPoint) {
+        updateRedactionPreview(at: viewPoint)
+        let region = redactionOverlayView.liveRegion
+        cancelRedactionPreview()
+        guard let region, region.bounds.width >= 2, region.bounds.height >= 2 else {
+            NSSound.beep()
+            return
+        }
+        onRedactionRegion?(region)
+    }
+
+    private func cancelRedactionPreview() {
+        redactionStart = nil
+        redactionOverlayView.liveRegion = nil
+        redactionOverlayView.needsDisplay = true
     }
 
     private func beginInk(at viewPoint: CGPoint) {
@@ -1347,8 +1636,80 @@ final class InteractivePDFView: PDFView {
         inkPreviewLayer.removeFromSuperlayer()
     }
 
+    private func beginShape(at viewPoint: CGPoint) {
+        guard annotationTool?.shapeKind != nil,
+              let placement = annotationPlacement(at: viewPoint) else {
+            return
+        }
+        wantsLayer = true
+        if shapePreviewLayer.superlayer == nil {
+            layer?.addSublayer(shapePreviewLayer)
+        }
+        shapeStart = placement
+        shapeStartViewPoint = viewPoint
+        shapePreviewLayer.frame = bounds
+        shapePreviewLayer.contentsScale = window?.backingScaleFactor ?? 2
+        shapePreviewLayer.path = nil
+    }
+
+    private func updateShapePreview(at viewPoint: CGPoint) {
+        guard
+            let shapeStart,
+            let shapeStartViewPoint,
+            let current = annotationPlacement(at: viewPoint),
+            current.pageIndex == shapeStart.pageIndex,
+            let kind = annotationTool?.shapeKind
+        else {
+            return
+        }
+        let rect = CGRect(
+            x: min(shapeStartViewPoint.x, viewPoint.x),
+            y: min(shapeStartViewPoint.y, viewPoint.y),
+            width: abs(viewPoint.x - shapeStartViewPoint.x),
+            height: abs(viewPoint.y - shapeStartViewPoint.y)
+        )
+        let path = CGMutablePath()
+        switch kind {
+        case .rectangle:
+            path.addRect(rect)
+        case .oval:
+            path.addEllipse(in: rect)
+        case .line, .arrow:
+            path.move(to: shapeStartViewPoint)
+            path.addLine(to: viewPoint)
+        }
+        shapePreviewLayer.path = path
+    }
+
+    private func finishShape(at viewPoint: CGPoint) {
+        updateShapePreview(at: viewPoint)
+        guard
+            let start = shapeStart,
+            let end = annotationPlacement(at: viewPoint),
+            end.pageIndex == start.pageIndex
+        else {
+            cancelShapePreview()
+            return
+        }
+        let placement = ShapeAnnotationPlacement(
+            pageIndex: start.pageIndex,
+            startPoint: start.point,
+            endPoint: end.point
+        )
+        cancelShapePreview()
+        onShapeAnnotation?(placement)
+    }
+
+    private func cancelShapePreview() {
+        shapeStart = nil
+        shapeStartViewPoint = nil
+        shapePreviewLayer.path = nil
+        shapePreviewLayer.removeFromSuperlayer()
+    }
+
     private func resetSelectGesture() {
         selectMouseDownPoint = nil
+        selectPageStartPoint = nil
         pendingClickedAnnotation = nil
         selectGestureDidDrag = false
     }
@@ -1434,7 +1795,71 @@ final class InteractivePDFView: PDFView {
         if annotation.type == PDFAnnotationSubtype.text.pdfTypeName {
             return .textNote
         }
+        if annotation.type == PDFAnnotationSubtype.square.pdfTypeName {
+            return .rectangle
+        }
+        if annotation.type == PDFAnnotationSubtype.circle.pdfTypeName {
+            return .oval
+        }
+        if annotation.type == PDFAnnotationSubtype.line.pdfTypeName {
+            return annotation.endLineStyle == .closedArrow ? .arrow : .line
+        }
+        if annotation.type == PDFAnnotationSubtype.stamp.pdfTypeName {
+            return VisualSignatureAnnotation.imageData(from: annotation) == nil ? .stamp : .signature
+        }
         return nil
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        nil
+    }
+}
+
+private final class RedactionOverlayView: NSView {
+    weak var pdfView: PDFView?
+    var regions: [PDFRedactionRegion] = []
+    var liveRegion: PDFRedactionRegion?
+
+    init(pdfView: PDFView) {
+        self.pdfView = pdfView
+        super.init(frame: .zero)
+        wantsLayer = true
+        layer?.backgroundColor = NSColor.clear.cgColor
+    }
+
+    override var isOpaque: Bool { false }
+    override var isFlipped: Bool { pdfView?.isFlipped ?? false }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        nil
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        guard let pdfView, let document = pdfView.document else {
+            return
+        }
+
+        for region in regions + [liveRegion].compactMap({ $0 }) {
+            guard
+                (0..<document.pageCount).contains(region.pageIndex),
+                let page = document.page(at: region.pageIndex)
+            else {
+                continue
+            }
+            let viewBounds = pdfView.convert(region.bounds, from: page).standardized
+            guard viewBounds.intersects(bounds) else {
+                continue
+            }
+            let path = NSBezierPath(rect: viewBounds)
+            NSColor.black.withAlphaComponent(0.62).setFill()
+            path.fill()
+            NSColor.systemRed.setStroke()
+            path.lineWidth = 2
+            path.setLineDash([6, 4], count: 2, phase: 0)
+            path.stroke()
+        }
     }
 
     @available(*, unavailable)
@@ -1540,6 +1965,8 @@ private extension ReaderTheme {
             NSColor(calibratedWhite: 0.82, alpha: 1)
         case .night:
             NSColor(calibratedWhite: 0.055, alpha: 1)
+        case .sepia:
+            NSColor(calibratedRed: 0.70, green: 0.63, blue: 0.49, alpha: 1)
         }
     }
 
@@ -1549,6 +1976,8 @@ private extension ReaderTheme {
             NSColor(calibratedWhite: 0.92, alpha: 1)
         case .night:
             NSColor(calibratedWhite: 0.11, alpha: 1)
+        case .sepia:
+            NSColor(calibratedRed: 0.86, green: 0.80, blue: 0.68, alpha: 1)
         }
     }
 }

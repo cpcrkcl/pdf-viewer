@@ -43,6 +43,64 @@ enum FixturePDFBuilder {
         }
     }
 
+    /// Writes a PDF whose single page embeds one large bitmap using lossless
+    /// (flate) encoding, like a typical scan. The gradient-plus-noise pixels
+    /// compress badly losslessly but well as JPEG, so JPEG-based export
+    /// profiles produce a measurably smaller output.
+    static func writeLargeImagePDF(
+        to url: URL,
+        pixelWidth: Int = 1400,
+        pixelHeight: Int = 1800
+    ) throws {
+        guard
+            let bitmap = NSBitmapImageRep(
+                bitmapDataPlanes: nil,
+                pixelsWide: pixelWidth,
+                pixelsHigh: pixelHeight,
+                bitsPerSample: 8,
+                samplesPerPixel: 3,
+                hasAlpha: false,
+                isPlanar: false,
+                colorSpaceName: .deviceRGB,
+                bytesPerRow: 0,
+                bitsPerPixel: 0
+            ),
+            let bitmapData = bitmap.bitmapData
+        else {
+            throw FixtureError.couldNotCreatePage
+        }
+
+        var seed: UInt64 = 0x9E3779B97F4A7C15
+        for y in 0..<pixelHeight {
+            for x in 0..<pixelWidth {
+                let index = y * bitmap.bytesPerRow + x * 3
+                seed = seed &* 6364136223846793005 &+ 1442695040888963407
+                let noise = Int(seed >> 60)
+                bitmapData[index] = UInt8((x * 255 / pixelWidth + noise) % 256)
+                bitmapData[index + 1] = UInt8((y * 255 / pixelHeight + noise) % 256)
+                bitmapData[index + 2] = UInt8(
+                    ((x + y) * 255 / (pixelWidth + pixelHeight) + noise) % 256
+                )
+            }
+        }
+
+        guard
+            let cgImage = bitmap.cgImage,
+            let consumer = CGDataConsumer(url: url as CFURL)
+        else {
+            throw FixtureError.couldNotCreatePage
+        }
+
+        var mediaBox = CGRect(x: 0, y: 0, width: 612, height: 792)
+        guard let context = CGContext(consumer: consumer, mediaBox: &mediaBox, nil) else {
+            throw FixtureError.couldNotWritePDF
+        }
+        context.beginPDFPage(nil)
+        context.draw(cgImage, in: mediaBox)
+        context.endPDFPage()
+        context.closePDF()
+    }
+
     static func writeTextPDF(pages: [String], to url: URL) throws {
         guard let consumer = CGDataConsumer(url: url as CFURL) else {
             throw FixtureError.couldNotWritePDF

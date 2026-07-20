@@ -23,6 +23,7 @@ enum ReaderDisplayMode: String, CaseIterable, Identifiable {
 enum ReaderTheme: String, CaseIterable, Identifiable {
     case day
     case night
+    case sepia
 
     var id: Self { self }
 
@@ -53,6 +54,7 @@ final class ReaderState: ObservableObject {
     @Published var selectedSidebarTab: ReaderSidebarTab
     @Published private(set) var isDocumentDirty: Bool
     @Published private(set) var zoomRequest: ReaderZoomRequest
+    @Published private(set) var printRequestSequence: Int
 
     init(pageCount: Int = 0) {
         let safePageCount = max(0, pageCount)
@@ -65,6 +67,7 @@ final class ReaderState: ObservableObject {
         self.selectedSidebarTab = .thumbnails
         self.isDocumentDirty = false
         self.zoomRequest = ReaderZoomRequest(sequence: 0, action: .fit)
+        self.printRequestSequence = 0
     }
 
     @discardableResult
@@ -181,6 +184,12 @@ final class ReaderState: ObservableObject {
             sequence: zoomRequest.sequence + 1,
             action: action
         )
+    }
+
+    /// Printing is presentation-only output of the working copy; the request
+    /// sequence is never treated as a document mutation.
+    func requestPrint() {
+        printRequestSequence += 1
     }
 
     func toggleReaderSidebar() {

@@ -98,7 +98,7 @@ The words **must**, **must not**, **should**, and **may** express requirement st
 | `MVP-014` | Support single-page viewing. | One page is presented as the primary page at a time. |
 | `MVP-015` | Support two-page viewing. | Two adjacent pages can be presented together, with first/last-page edge cases handled without inventing pages. |
 | `MVP-016` | Support continuous viewing. | Pages can be scrolled in their current working order without requiring a separate page-selection action for every transition. |
-| `MVP-017` | Support Day and Night reading themes. | A user can select either theme and observe a clearly distinct reading presentation. |
+| `MVP-017` | Support Day, Night, and Sepia reading themes. | A user can select any theme and observe a clearly distinct reading presentation. |
 | `MVP-018` | Keep presentation state separate from document content. | Changing a theme or viewing mode does not mark the working document as modified, alter page contents, or affect exported page contents. |
 | `MVP-019` | Keep reader and organizer actions usable across supported window sizes. | Every committed reader and organizer action remains discoverable and operable from a 720×520 content area through full screen. Adaptive overflow menus are permitted, but controls must not overlap or use ambiguous truncated action labels. |
 
@@ -146,7 +146,7 @@ These workflows define product acceptance behavior for future implementation. Th
 2. Open the PDF.
 3. Navigate by thumbnail and page number.
 4. Exercise single-page, two-page, and continuous viewing.
-5. Exercise Day and Night themes.
+5. Exercise Day, Night, and Sepia themes.
 6. Resize the content area through 720×520, 800×550, 900×600, 1100×720, and full screen.
 7. Hide, restore, and resize the thumbnail sidebar.
 8. Verify that every reading, navigation, search, and page action remains reachable without overlapping controls or ambiguous truncated labels.
@@ -287,7 +287,7 @@ Each section 1 source bullet has one canonical requirement anchor. Related requi
 | Recent documents | `MVP-004` | `MVP-005` |
 | Page thumbnails and page navigation | `MVP-011` | `MVP-010`, `MVP-012`, `MVP-013` |
 | Single-page, two-page, and continuous viewing | `MVP-014` | `MVP-015`, `MVP-016` |
-| Day and Night reading themes | `MVP-017` | `MVP-018` |
+| Day, Night, and Sepia reading themes | `MVP-017` | `MVP-018` |
 | Text search within a PDF | `MVP-020` | `MVP-021` through `MVP-024` |
 | Add, delete, rotate, reorder, extract, and merge pages | `MVP-030` | `MVP-031` through `MVP-037` |
 | Export the result as a new PDF | `MVP-040` | `MVP-041`, `MVP-044` |

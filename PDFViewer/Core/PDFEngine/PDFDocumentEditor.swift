@@ -83,6 +83,30 @@ final class PDFDocumentEditor: ObservableObject {
         self.protectedSnapshots = [sourceData]
     }
 
+    /// Creates an editor from a normalized, independently serialized working
+    /// copy. `DocumentLoader.openAsync(_:)` prepares these bytes away from the
+    /// main actor so opening a large document does not copy every page on the
+    /// UI thread.
+    init(
+        preparedPDFData sourceData: Data,
+        documentFingerprint: String
+    ) throws {
+        let workingDocument = try Self.document(from: sourceData)
+        let initialPageIDs = (0..<workingDocument.pageCount).map {
+            WorkingPageID.original(
+                documentFingerprint: documentFingerprint,
+                pageIndex: $0
+            )
+        }
+        self.document = workingDocument
+        self.pageIDs = initialPageIDs
+        self.revisions = [
+            DocumentRevision(pdfData: sourceData, pageIDs: initialPageIDs),
+        ]
+        self.sourceSnapshot = sourceData
+        self.protectedSnapshots = [sourceData]
+    }
+
     var currentRevision: DocumentRevision {
         revisions[snapshotIndex]
     }
@@ -345,6 +369,88 @@ final class PDFDocumentEditor: ObservableObject {
     }
 
     @discardableResult
+    func addShapeAnnotation(
+        kind: ShapeAnnotationKind,
+        placement: ShapeAnnotationPlacement,
+        color: AnnotationPaletteColor,
+        lineWidth: AnnotationLineWidth
+    ) throws -> AnnotationIdentifier {
+        guard (0..<document.pageCount).contains(placement.pageIndex) else {
+            throw PDFDocumentEditorError.invalidAnnotation
+        }
+        let isLine = kind == .line || kind == .arrow
+        guard isLine ? hypot(
+            placement.endPoint.x - placement.startPoint.x,
+            placement.endPoint.y - placement.startPoint.y
+        ) >= 4 : placement.bounds.width >= 4 && placement.bounds.height >= 4 else {
+            throw PDFDocumentEditorError.invalidAnnotation
+        }
+
+        let identifier = AnnotationIdentifier()
+        try mutateAnnotation { candidate in
+            guard let page = candidate.page(at: placement.pageIndex) else {
+                throw PDFDocumentEditorError.invalidAnnotation
+            }
+            let pageBounds = page.bounds(for: .cropBox)
+            let inset = lineWidth.points / 2 + 2
+            let rawBounds = placement.bounds.insetBy(dx: -inset, dy: -inset)
+            let bounds = Self.clampedBounds(rawBounds, to: pageBounds)
+            let subtype: PDFAnnotationSubtype = switch kind {
+            case .rectangle: .square
+            case .oval: .circle
+            case .line, .arrow: .line
+            }
+            let annotation = PDFAnnotation(bounds: bounds, forType: subtype, withProperties: nil)
+            let border = PDFBorder()
+            border.lineWidth = lineWidth.points
+            annotation.border = border
+            annotation.interiorColor = .clear
+            if isLine {
+                annotation.startPoint = CGPoint(
+                    x: placement.startPoint.x - bounds.minX,
+                    y: placement.startPoint.y - bounds.minY
+                )
+                annotation.endPoint = CGPoint(
+                    x: placement.endPoint.x - bounds.minX,
+                    y: placement.endPoint.y - bounds.minY
+                )
+                annotation.startLineStyle = .none
+                annotation.endLineStyle = kind == .arrow ? .closedArrow : .none
+            }
+            Self.configureOwnedAnnotation(annotation, identifier: identifier, color: color.color)
+            page.addAnnotation(annotation)
+        }
+        return identifier
+    }
+
+    @discardableResult
+    func addBuiltInStamp(
+        pageIndex: Int,
+        point: CGPoint,
+        preset: StampPreset
+    ) throws -> AnnotationIdentifier {
+        guard (0..<document.pageCount).contains(pageIndex) else {
+            throw PDFDocumentEditorError.invalidAnnotation
+        }
+        let identifier = AnnotationIdentifier()
+        try mutateAnnotation { candidate in
+            guard let page = candidate.page(at: pageIndex) else {
+                throw PDFDocumentEditorError.invalidAnnotation
+            }
+            let bounds = Self.clampedBounds(
+                CGRect(x: point.x - 72, y: point.y - 24, width: 144, height: 48),
+                to: page.bounds(for: .cropBox)
+            )
+            let annotation = PDFAnnotation(bounds: bounds, forType: .stamp, withProperties: nil)
+            annotation.stampName = preset.pdfName
+            annotation.contents = preset.title
+            Self.configureOwnedAnnotation(annotation, identifier: identifier, color: .systemRed)
+            page.addAnnotation(annotation)
+        }
+        return identifier
+    }
+
+    @discardableResult
     func addTextNote(
         pageIndex: Int,
         point: CGPoint,
@@ -381,6 +487,179 @@ final class PDFDocumentEditor: ObservableObject {
             page.addAnnotation(annotation)
         }
         return identifier
+    }
+
+    @discardableResult
+    func addVisualSignature(
+        pageIndex: Int,
+        point: CGPoint,
+        imageData: Data,
+        size: SignatureSizePreset
+    ) throws -> AnnotationIdentifier {
+        guard
+            (0..<document.pageCount).contains(pageIndex),
+            let image = NSImage(data: imageData),
+            image.size.width > 0,
+            image.size.height > 0
+        else {
+            throw PDFDocumentEditorError.invalidAnnotation
+        }
+
+        let identifier = AnnotationIdentifier()
+        try mutateAnnotation { candidate in
+            guard let page = candidate.page(at: pageIndex) else {
+                throw PDFDocumentEditorError.invalidAnnotation
+            }
+            let bounds = Self.visualSignatureBounds(
+                centeredAt: point,
+                aspectRatio: image.size.width / image.size.height,
+                size: size,
+                pageBounds: page.bounds(for: .cropBox)
+            )
+            let annotation = try VisualSignatureAnnotation(
+                bounds: bounds,
+                imageData: imageData
+            )
+            Self.configureOwnedAnnotation(
+                annotation,
+                identifier: identifier,
+                color: .clear
+            )
+            page.addAnnotation(annotation)
+        }
+        return identifier
+    }
+
+    func updateVisualSignatureSize(
+        pageIndex: Int,
+        identifier: AnnotationIdentifier,
+        size: SignatureSizePreset
+    ) throws {
+        try mutateAnnotation { candidate in
+            guard
+                let page = candidate.page(at: pageIndex),
+                let existing = Self.ownedAnnotation(on: page, identifier: identifier),
+                existing.type == PDFAnnotationSubtype.stamp.pdfTypeName,
+                let imageData = VisualSignatureAnnotation.imageData(from: existing),
+                let aspectRatio = VisualSignatureAnnotation.aspectRatio(from: existing)
+            else {
+                throw PDFDocumentEditorError.invalidAnnotation
+            }
+            let bounds = Self.visualSignatureBounds(
+                centeredAt: CGPoint(x: existing.bounds.midX, y: existing.bounds.midY),
+                aspectRatio: Self.displayedSignatureAspectRatio(
+                    aspectRatio,
+                    rotationQuarterTurns: VisualSignatureAnnotation.rotationQuarterTurns(from: existing)
+                ),
+                size: size,
+                pageBounds: page.bounds(for: .cropBox)
+            )
+            let replacement = try VisualSignatureAnnotation(
+                bounds: bounds,
+                imageData: imageData,
+                rotationQuarterTurns: VisualSignatureAnnotation.rotationQuarterTurns(from: existing)
+            )
+            Self.configureOwnedAnnotation(
+                replacement,
+                identifier: identifier,
+                color: .clear
+            )
+            page.removeAnnotation(existing)
+            page.addAnnotation(replacement)
+        }
+    }
+
+    func moveAnnotation(
+        pageIndex: Int,
+        identifier: AnnotationIdentifier,
+        by translation: CGSize
+    ) throws {
+        guard translation.width.isFinite, translation.height.isFinite else {
+            throw PDFDocumentEditorError.invalidAnnotation
+        }
+        try mutateOwnedAnnotation(pageIndex: pageIndex, identifier: identifier) { annotation in
+            guard let page = annotation.page else {
+                throw PDFDocumentEditorError.invalidAnnotation
+            }
+            annotation.bounds = Self.clampedBounds(
+                annotation.bounds.offsetBy(dx: translation.width, dy: translation.height),
+                to: page.bounds(for: .cropBox)
+            )
+            annotation.modificationDate = Date()
+        }
+    }
+
+    func resizeAnnotation(
+        pageIndex: Int,
+        identifier: AnnotationIdentifier,
+        scale: CGFloat
+    ) throws {
+        guard scale.isFinite, (0.25...4).contains(scale) else {
+            throw PDFDocumentEditorError.invalidAnnotation
+        }
+        try mutateOwnedAnnotation(pageIndex: pageIndex, identifier: identifier) { annotation in
+            guard let page = annotation.page else {
+                throw PDFDocumentEditorError.invalidAnnotation
+            }
+            let oldBounds = annotation.bounds
+            let pageBounds = page.bounds(for: .cropBox)
+            let newSize = CGSize(
+                width: min(pageBounds.width, max(8, oldBounds.width * scale)),
+                height: min(pageBounds.height, max(8, oldBounds.height * scale))
+            )
+            let requestedBounds = CGRect(
+                x: oldBounds.midX - newSize.width / 2,
+                y: oldBounds.midY - newSize.height / 2,
+                width: newSize.width,
+                height: newSize.height
+            )
+            let newBounds = Self.clampedBounds(requestedBounds, to: pageBounds)
+            if annotation.type == PDFAnnotationSubtype.line.pdfTypeName {
+                let oldStart = annotation.startPoint
+                let oldEnd = annotation.endPoint
+                let xScale = newBounds.width / max(oldBounds.width, 0.001)
+                let yScale = newBounds.height / max(oldBounds.height, 0.001)
+                annotation.bounds = newBounds
+                annotation.startPoint = CGPoint(x: oldStart.x * xScale, y: oldStart.y * yScale)
+                annotation.endPoint = CGPoint(x: oldEnd.x * xScale, y: oldEnd.y * yScale)
+            } else {
+                annotation.bounds = newBounds
+            }
+            annotation.modificationDate = Date()
+        }
+    }
+
+    func rotateVisualSignature(
+        pageIndex: Int,
+        identifier: AnnotationIdentifier,
+        clockwise: Bool
+    ) throws {
+        try mutateAnnotation { candidate in
+            guard
+                let page = candidate.page(at: pageIndex),
+                let existing = Self.ownedAnnotation(on: page, identifier: identifier),
+                existing.type == PDFAnnotationSubtype.stamp.pdfTypeName,
+                let imageData = VisualSignatureAnnotation.imageData(from: existing)
+            else {
+                throw PDFDocumentEditorError.invalidAnnotation
+            }
+            let currentRotation = VisualSignatureAnnotation.rotationQuarterTurns(from: existing)
+            let newRotation = currentRotation + (clockwise ? 1 : -1)
+            let swappedBounds = CGRect(
+                x: existing.bounds.midX - existing.bounds.height / 2,
+                y: existing.bounds.midY - existing.bounds.width / 2,
+                width: existing.bounds.height,
+                height: existing.bounds.width
+            )
+            let replacement = try VisualSignatureAnnotation(
+                bounds: Self.clampedBounds(swappedBounds, to: page.bounds(for: .cropBox)),
+                imageData: imageData,
+                rotationQuarterTurns: newRotation
+            )
+            Self.configureOwnedAnnotation(replacement, identifier: identifier, color: .clear)
+            page.removeAnnotation(existing)
+            page.addAnnotation(replacement)
+        }
     }
 
     func updateAnnotationColor(
@@ -460,6 +739,77 @@ final class PDFDocumentEditor: ObservableObject {
             return nil
         }
         return annotation.contents
+    }
+
+    var formFields: [PDFFormField] {
+        PDFFormEngine.fields(in: document)
+    }
+
+    func updateFormField(
+        named name: String,
+        value: PDFFormFieldValue
+    ) throws {
+        try mutateAnnotation { candidate in
+            try PDFFormEngine.setValue(value, forFieldNamed: name, in: candidate)
+        }
+    }
+
+    func resetFormFields() throws {
+        try mutateAnnotation { candidate in
+            try PDFFormEngine.reset(in: candidate)
+        }
+    }
+
+    func validateRequiredFormFields() throws {
+        try PDFFormEngine.validateRequiredFields(in: document)
+    }
+
+    func applyPermanentRedactions(
+        _ regions: [PDFRedactionRegion],
+        reasonLabel: String? = nil
+    ) throws {
+        let redacted = try PDFRedactionEngine.redactedDocument(
+            from: document,
+            regions: regions,
+            reasonLabel: reasonLabel
+        )
+        try commit(redacted, pageIDs: pageIDs)
+    }
+
+    func applyProcessedDocument(
+        _ processedDocument: PDFDocument,
+        sourcePageIndexes: [Int]? = nil
+    ) throws {
+        guard let sourcePageIndexes else {
+            guard processedDocument.pageCount == document.pageCount else {
+                throw PDFDocumentEditorError.couldNotCopyDocument
+            }
+            try commit(processedDocument, pageIDs: pageIDs)
+            return
+        }
+        guard
+            processedDocument.pageCount == sourcePageIndexes.count,
+            sourcePageIndexes.allSatisfy({ pageIDs.indices.contains($0) }),
+            Set(sourcePageIndexes) == Set(pageIDs.indices),
+            sourcePageIndexes == sourcePageIndexes.sorted()
+        else {
+            throw PDFDocumentEditorError.couldNotCopyDocument
+        }
+        var occurrences: [Int: Int] = [:]
+        let processedPageIDs = sourcePageIndexes.map { sourceIndex -> WorkingPageID in
+            let occurrence = occurrences[sourceIndex, default: 0]
+            occurrences[sourceIndex] = occurrence + 1
+            let sourceID = pageIDs[sourceIndex]
+            guard occurrence > 0 else {
+                return sourceID
+            }
+            return WorkingPageID(
+                documentFingerprint: sourceID.documentFingerprint,
+                originalPageIndex: sourceID.originalPageIndex,
+                occurrenceID: UUID()
+            )
+        }
+        try commit(processedDocument, pageIDs: processedPageIDs)
     }
 
     func undo() throws {
@@ -562,6 +912,40 @@ final class PDFDocumentEditor: ObservableObject {
         _ = annotation.setValue(
             identifier.pdfName,
             forAnnotationKey: AnnotationIdentifier.storageKey
+        )
+    }
+
+    private static func visualSignatureBounds(
+        centeredAt point: CGPoint,
+        aspectRatio: CGFloat,
+        size: SignatureSizePreset,
+        pageBounds: CGRect
+    ) -> CGRect {
+        let safeAspectRatio = max(0.2, min(aspectRatio, 8))
+        let width = min(size.width, pageBounds.width)
+        let height = min(width / safeAspectRatio, pageBounds.height)
+        let origin = CGPoint(
+            x: min(max(pageBounds.minX, point.x - width / 2), pageBounds.maxX - width),
+            y: min(max(pageBounds.minY, point.y - height / 2), pageBounds.maxY - height)
+        )
+        return CGRect(origin: origin, size: CGSize(width: width, height: height))
+    }
+
+    private static func displayedSignatureAspectRatio(
+        _ aspectRatio: CGFloat,
+        rotationQuarterTurns: Int
+    ) -> CGFloat {
+        rotationQuarterTurns.isMultiple(of: 2) ? aspectRatio : 1 / max(aspectRatio, 0.001)
+    }
+
+    private static func clampedBounds(_ bounds: CGRect, to pageBounds: CGRect) -> CGRect {
+        let width = min(max(bounds.width, 1), pageBounds.width)
+        let height = min(max(bounds.height, 1), pageBounds.height)
+        return CGRect(
+            x: min(max(pageBounds.minX, bounds.minX), pageBounds.maxX - width),
+            y: min(max(pageBounds.minY, bounds.minY), pageBounds.maxY - height),
+            width: width,
+            height: height
         )
     }
 

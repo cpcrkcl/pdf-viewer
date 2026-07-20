@@ -31,6 +31,10 @@ enum UnsavedChangesResolution {
 enum ExportKind: Equatable {
     case workingCopy
     case extractedPages
+    case flattenedForm
+    case createdFromImages
+    case convertedImages
+    case convertedText
 }
 
 struct ExportReceipt: Identifiable, Equatable {
@@ -38,9 +42,20 @@ struct ExportReceipt: Identifiable, Equatable {
     let url: URL
     let pageCount: Int
     let kind: ExportKind
+    let fileSizeInBytes: Int
 
     var displayName: String {
         url.lastPathComponent
+    }
+
+    var formattedFileSize: String? {
+        guard fileSizeInBytes > 0 else {
+            return nil
+        }
+        return ByteCountFormatter.string(
+            fromByteCount: Int64(fileSizeInBytes),
+            countStyle: .file
+        )
     }
 }
 
@@ -70,6 +85,15 @@ struct PendingPageDeletion: Identifiable {
     var confirmationTitle: String {
         selectedPageCount == 1 ? "Delete Page" : "Delete \(selectedPageCount) Pages"
     }
+}
+
+struct PendingPermanentRedaction: Identifiable {
+    let id = UUID()
+    let regions: [PDFRedactionRegion]
+    let reasonLabel: String?
+
+    var regionCount: Int { regions.count }
+    var pageCount: Int { Set(regions.map(\.pageIndex)).count }
 }
 
 struct PendingDocumentUnlock: Identifiable {
@@ -113,12 +137,18 @@ struct PendingEncryptedExport: Identifiable {
     let title: String
     let kind: ExportKind
     let continuation: PendingDocumentAction?
+    let usesActiveSessionProtection: Bool
 }
 
 enum DocumentPermissionError: LocalizedError, Equatable {
     case commentingDenied
     case documentAssemblyDenied
     case extractionDenied
+    case printingDenied
+    case formFieldEntryDenied
+    case redactionDenied
+    case documentProcessingDenied
+    case conversionDenied
     case protectedSecondaryPDFUnsupported
 
     var errorDescription: String? {
@@ -129,6 +159,16 @@ enum DocumentPermissionError: LocalizedError, Equatable {
             "The source PDF does not permit adding, deleting, rotating, or reordering pages with this password."
         case .extractionDenied:
             "The source PDF does not permit both page assembly and content copying, which are required for extraction."
+        case .printingDenied:
+            "The source PDF does not permit printing with this password."
+        case .formFieldEntryDenied:
+            "The source PDF does not permit filling form fields with this password."
+        case .redactionDenied:
+            "The source PDF does not permit changing page content with this password."
+        case .documentProcessingDenied:
+            "The source PDF does not permit replacing pages with locally processed versions using this password."
+        case .conversionDenied:
+            "The source PDF does not permit copying page content for conversion with this password."
         case .protectedSecondaryPDFUnsupported:
             "Password-protected PDFs cannot be used as secondary Add Pages or Merge inputs. Open and export that PDF separately first."
         }
@@ -150,6 +190,7 @@ final class AppState: ObservableObject {
     @Published var isPageOrganizerPresented = false
     @Published var presentedError: PresentedError?
     @Published var pendingPageDeletion: PendingPageDeletion?
+    @Published var pendingPermanentRedaction: PendingPermanentRedaction?
     @Published var isPageDeletionConfirmationPresented = false
     @Published var pendingPDFImport: PendingPDFImport?
     @Published var pendingTextNote: PendingTextNote?
@@ -158,6 +199,14 @@ final class AppState: ObservableObject {
     @Published var pendingBookmarkRename: PendingBookmarkRename?
     @Published var pendingUnsavedChanges: PendingUnsavedChanges?
     @Published var exportReceipt: ExportReceipt?
+    @Published var isSignatureLibraryPresented = false
+    @Published var isFormEditorPresented = false
+    @Published var isLocalProcessingPresented = false
+    @Published var isConversionPresented = false
+    @Published var isImageImporterPresented = false
+    @Published private(set) var isLocalProcessing = false
+    @Published private(set) var isLoadingDocument = false
+    @Published private(set) var localProcessingProgress: PDFOCRProgress?
     @Published private(set) var searchFocusRevision = 0
     @Published private(set) var windowCloseRequestRevision = 0
 
@@ -167,11 +216,18 @@ final class AppState: ObservableObject {
     let annotationState: AnnotationState
     let bookmarkStore: PageBookmarkStore
     let navigationHistory: NavigationHistory
+    let signatureLibrary: SignatureLibrary
+    let redactionState: RedactionState
 
     private let documentLoader: DocumentLoader
     private let pdfExporter: any PDFExporting
+    private let loadDocumentsAsynchronously: Bool
     private var childObservations: Set<AnyCancellable> = []
     private var editorObservation: AnyCancellable?
+    private var documentLoadingTask: Task<Void, Never>?
+    private var documentLoadingGeneration = UUID()
+    private var localProcessingTask: Task<Void, Never>?
+    private var localProcessingGeneration = UUID()
     var terminationReplyHandler: ((Bool) -> Void)?
 
     var canCommentOnActiveDocument: Bool {
@@ -189,6 +245,32 @@ final class AppState: ObservableObject {
         return securityContext.allowsDocumentAssembly && securityContext.allowsContentCopying
     }
 
+    var canPrintActiveDocument: Bool {
+        session?.securityContext.allowsPrinting == true
+    }
+
+    var canFillFormsInActiveDocument: Bool {
+        guard
+            session?.securityContext.allowsFormFieldEntry == true,
+            let editor = session?.editor
+        else {
+            return false
+        }
+        return !editor.formFields.isEmpty
+    }
+
+    var canRedactActiveDocument: Bool {
+        session?.securityContext.allowsDocumentChanges == true
+    }
+
+    var canProcessActiveDocument: Bool {
+        session?.securityContext.allowsDocumentChanges == true
+    }
+
+    var canConvertActiveDocument: Bool {
+        session?.securityContext.allowsContentCopying == true
+    }
+
     init(
         documentLoader: DocumentLoader = DocumentLoader(),
         recentDocuments: RecentDocumentsStore = RecentDocumentsStore(),
@@ -197,7 +279,10 @@ final class AppState: ObservableObject {
         annotationState: AnnotationState = AnnotationState(),
         bookmarkStore: PageBookmarkStore = PageBookmarkStore(),
         navigationHistory: NavigationHistory = NavigationHistory(),
-        pdfExporter: any PDFExporting = PDFExporter()
+        signatureLibrary: SignatureLibrary = SignatureLibrary(),
+        redactionState: RedactionState = RedactionState(),
+        pdfExporter: any PDFExporting = PDFExporter(),
+        loadDocumentsAsynchronously: Bool = true
     ) {
         self.documentLoader = documentLoader
         self.recentDocuments = recentDocuments
@@ -206,7 +291,10 @@ final class AppState: ObservableObject {
         self.annotationState = annotationState
         self.bookmarkStore = bookmarkStore
         self.navigationHistory = navigationHistory
+        self.signatureLibrary = signatureLibrary
+        self.redactionState = redactionState
         self.pdfExporter = pdfExporter
+        self.loadDocumentsAsynchronously = loadDocumentsAsynchronously
 
         readerState.objectWillChange
             .sink { [weak self] _ in
@@ -233,6 +321,16 @@ final class AppState: ObservableObject {
                 self?.objectWillChange.send()
             }
             .store(in: &childObservations)
+        signatureLibrary.objectWillChange
+            .sink { [weak self] _ in
+                self?.objectWillChange.send()
+            }
+            .store(in: &childObservations)
+        redactionState.objectWillChange
+            .sink { [weak self] _ in
+                self?.objectWillChange.send()
+            }
+            .store(in: &childObservations)
     }
 
     func handleFileImport(_ result: Result<[URL], any Error>) {
@@ -243,7 +341,10 @@ final class AppState: ObservableObject {
             }
             requestOpenDocument(at: url)
         case .failure(let error):
-            if (error as NSError).code != NSUserCancelledError {
+            let nsError = error as NSError
+            let isUserCancellation = nsError.domain == NSCocoaErrorDomain
+                && nsError.code == NSUserCancelledError
+            if !isUserCancellation {
                 present(error, title: "Could Not Choose PDF")
             }
         }
@@ -253,18 +354,88 @@ final class AppState: ObservableObject {
         requestDocumentAction(.openURL(url))
     }
 
+    func cancelDocumentOpen() {
+        cancelDocumentLoading()
+    }
+
     private func openDocumentNow(at url: URL) {
-        do {
-            pendingDocumentUnlock?.handle.cancel()
-            pendingDocumentUnlock = nil
-            switch try documentLoader.open(url) {
-            case .opened(let newSession):
-                activate(newSession)
-            case .passwordRequired(let lockedHandle):
-                pendingDocumentUnlock = PendingDocumentUnlock(handle: lockedHandle)
+        cancelDocumentLoading()
+        pendingDocumentUnlock?.handle.cancel()
+        pendingDocumentUnlock = nil
+
+        guard loadDocumentsAsynchronously else {
+            openDocumentSynchronously(at: url)
+            return
+        }
+
+        let generation = UUID()
+        documentLoadingGeneration = generation
+        isLoadingDocument = true
+        documentLoadingTask = Task { [weak self] in
+            guard let self else {
+                return
             }
+            do {
+                let result = try await documentLoader.openAsync(url)
+                guard
+                    !Task.isCancelled,
+                    documentLoadingGeneration == generation
+                else {
+                    release(result)
+                    return
+                }
+                finishDocumentLoading(generation: generation)
+                handleDocumentOpenResult(result)
+            } catch is CancellationError {
+                finishDocumentLoading(generation: generation)
+            } catch {
+                guard documentLoadingGeneration == generation else {
+                    return
+                }
+                finishDocumentLoading(generation: generation)
+                present(error, title: "Could Not Open PDF")
+            }
+        }
+    }
+
+    private func openDocumentSynchronously(at url: URL) {
+        do {
+            handleDocumentOpenResult(try documentLoader.open(url))
         } catch {
             present(error, title: "Could Not Open PDF")
+        }
+    }
+
+    private func handleDocumentOpenResult(_ result: DocumentOpenResult) {
+        switch result {
+        case .opened(let newSession):
+            activate(newSession)
+        case .passwordRequired(let lockedHandle):
+            pendingDocumentUnlock = PendingDocumentUnlock(handle: lockedHandle)
+        }
+    }
+
+    private func finishDocumentLoading(generation: UUID) {
+        guard documentLoadingGeneration == generation else {
+            return
+        }
+        isLoadingDocument = false
+        documentLoadingTask = nil
+    }
+
+    private func cancelDocumentLoading() {
+        documentLoadingGeneration = UUID()
+        documentLoadingTask?.cancel()
+        documentLoadingTask = nil
+        isLoadingDocument = false
+    }
+
+    private func release(_ result: DocumentOpenResult) {
+        switch result {
+        case .opened(let session):
+            session.close()
+        case .passwordRequired(let handle):
+            handle.cancel()
         }
     }
 
@@ -296,21 +467,29 @@ final class AppState: ObservableObject {
     }
 
     private func activate(_ newSession: DocumentSession) {
+        cancelLocalProcessing()
         searchController.clear()
         session?.close()
         session = newSession
+        AppDiagnostics.record(.documentOpened)
         editorObservation = newSession.editor.objectWillChange.sink { [weak self] _ in
             self?.objectWillChange.send()
         }
         pendingPDFImport = nil
         pendingPageDeletion = nil
+        pendingPermanentRedaction = nil
         isPageDeletionConfirmationPresented = false
         isPageOrganizerPresented = false
         exportReceipt = nil
         pendingTextNote = nil
         pendingEncryptedExport = nil
         pendingBookmarkRename = nil
+        isSignatureLibraryPresented = false
+        isFormEditorPresented = false
+        isConversionPresented = false
+        isImageImporterPresented = false
         annotationState.reset()
+        redactionState.end()
         readerState.reset(pageCount: newSession.document.pageCount)
         _ = readerState.selectPage(at: 0)
         navigationHistory.reset(initialPageID: newSession.editor.pageID(at: 0))
@@ -327,15 +506,22 @@ final class AppState: ObservableObject {
     }
 
     func openRecentDocument(_ document: RecentDocument) {
+        guard let url = resolveRecentDocumentURL(document) else {
+            return
+        }
+        requestOpenDocument(at: url)
+    }
+
+    func resolveRecentDocumentURL(_ document: RecentDocument) -> URL? {
         do {
-            let url = try recentDocuments.resolve(document)
-            requestOpenDocument(at: url)
+            return try recentDocuments.resolve(document)
         } catch {
             present(
                 error,
                 title: "Recent PDF Is Unavailable",
                 fallbackMessage: "The file may have moved, been deleted, or no longer be accessible."
             )
+            return nil
         }
     }
 
@@ -344,6 +530,9 @@ final class AppState: ObservableObject {
     }
 
     func requestWindowClose() -> Bool {
+        if isLoadingDocument {
+            cancelDocumentLoading()
+        }
         guard session?.editor.hasUnexportedChanges == true else {
             return true
         }
@@ -353,6 +542,9 @@ final class AppState: ObservableObject {
     }
 
     func requestApplicationTermination() -> Bool {
+        if isLoadingDocument {
+            cancelDocumentLoading()
+        }
         guard session?.editor.hasUnexportedChanges == true else {
             return true
         }
@@ -378,9 +570,13 @@ final class AppState: ObservableObject {
     }
 
     private func closeDocumentNow() {
+        let hadOpenDocument = session != nil
+        cancelDocumentLoading()
+        cancelLocalProcessing()
         searchController.clear()
         pendingPDFImport = nil
         pendingPageDeletion = nil
+        pendingPermanentRedaction = nil
         isPageDeletionConfirmationPresented = false
         isPageOrganizerPresented = false
         pendingTextNote = nil
@@ -388,10 +584,18 @@ final class AppState: ObservableObject {
         pendingDocumentUnlock = nil
         pendingEncryptedExport = nil
         pendingBookmarkRename = nil
+        isSignatureLibraryPresented = false
+        isFormEditorPresented = false
+        isConversionPresented = false
+        isImageImporterPresented = false
         annotationState.reset()
+        redactionState.end()
         editorObservation = nil
         session?.close()
         session = nil
+        if hadOpenDocument {
+            AppDiagnostics.record(.documentClosed)
+        }
         readerState.reset(pageCount: 0)
         navigationHistory.reset()
     }
@@ -423,6 +627,20 @@ final class AppState: ObservableObject {
 
     func requestSearchFocus() {
         searchFocusRevision += 1
+    }
+
+    /// Prints the in-memory working copy (including pending page edits and
+    /// annotations) through the reader's native print panel. The source PDF is
+    /// never written and the document revision never changes.
+    func printWorkingDocument() {
+        guard session != nil else {
+            return
+        }
+        guard canPrintActiveDocument else {
+            present(DocumentPermissionError.printingDenied, title: "Printing Not Permitted")
+            return
+        }
+        readerState.requestPrint()
     }
 
     func goToAdjacentPage(offset: Int) {
@@ -650,6 +868,408 @@ final class AppState: ObservableObject {
         isPageOrganizerPresented = true
     }
 
+    func presentFormEditor() {
+        guard requireFormFieldEntryPermission() else {
+            return
+        }
+        guard session?.editor.formFields.isEmpty == false else {
+            return
+        }
+        annotationState.end()
+        pendingTextNote = nil
+        isPageOrganizerPresented = false
+        isFormEditorPresented = true
+    }
+
+    func dismissFormEditor() {
+        isFormEditorPresented = false
+    }
+
+    func updateFormField(named name: String, value: PDFFormFieldValue) {
+        guard requireFormFieldEntryPermission(), let editor = session?.editor else {
+            return
+        }
+
+        do {
+            try editor.updateFormField(named: name, value: value)
+            synchronizeAfterDocumentMutation()
+        } catch {
+            present(error, title: "Could Not Fill Form Field")
+        }
+    }
+
+    func resetFormFields() {
+        guard requireFormFieldEntryPermission(), let editor = session?.editor else {
+            return
+        }
+
+        do {
+            try editor.resetFormFields()
+            synchronizeAfterDocumentMutation()
+        } catch {
+            present(error, title: "Could Not Reset Form")
+        }
+    }
+
+    func toggleRedactionMode() {
+        if redactionState.isActive {
+            pendingPermanentRedaction = nil
+            redactionState.end()
+            return
+        }
+        guard requireRedactionPermission() else {
+            return
+        }
+        annotationState.end()
+        pendingTextNote = nil
+        isPageOrganizerPresented = false
+        isFormEditorPresented = false
+        redactionState.begin()
+    }
+
+    func addRedactionRegion(_ region: PDFRedactionRegion) {
+        guard redactionState.isActive, requireRedactionPermission() else {
+            return
+        }
+        redactionState.add(region)
+    }
+
+    func removeLastRedactionRegion() {
+        redactionState.removeLast()
+    }
+
+    func clearRedactionRegions() {
+        redactionState.clear()
+    }
+
+    func requestApplyPermanentRedactions() {
+        guard redactionState.isActive, requireRedactionPermission() else {
+            return
+        }
+        guard !redactionState.regions.isEmpty else {
+            present(PDFRedactionError.noRegions, title: "No Redaction Areas")
+            return
+        }
+        pendingPermanentRedaction = PendingPermanentRedaction(
+            regions: redactionState.regions,
+            reasonLabel: redactionState.reasonLabel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? nil
+                : redactionState.reasonLabel
+        )
+    }
+
+    func cancelPermanentRedaction() {
+        pendingPermanentRedaction = nil
+    }
+
+    func confirmPermanentRedaction() {
+        guard
+            let pendingPermanentRedaction,
+            requireRedactionPermission(),
+            let editor = session?.editor
+        else {
+            return
+        }
+        self.pendingPermanentRedaction = nil
+
+        do {
+            try editor.applyPermanentRedactions(
+                pendingPermanentRedaction.regions,
+                reasonLabel: pendingPermanentRedaction.reasonLabel
+            )
+            redactionState.end()
+            synchronizeAfterDocumentMutation()
+            annotationState.clearTransientSelection()
+        } catch {
+            present(error, title: "Could Not Apply Redactions")
+        }
+    }
+
+    func presentLocalProcessing() {
+        guard requireDocumentProcessingPermission() else {
+            return
+        }
+        annotationState.end()
+        redactionState.end()
+        isPageOrganizerPresented = false
+        isFormEditorPresented = false
+        localProcessingProgress = nil
+        isLocalProcessingPresented = true
+    }
+
+    func startLocalProcessing(
+        pageIndexes: IndexSet,
+        addsSearchableText: Bool,
+        enhancement: PDFScanEnhancementPreset,
+        rasterQuality: PDFOCRRasterQuality = .balanced,
+        cropMarginsPercent: Double = 0,
+        splitDoublePages: Bool = false
+    ) {
+        guard
+            !isLocalProcessing,
+            requireDocumentProcessingPermission(),
+            let session,
+            !pageIndexes.isEmpty
+        else {
+            return
+        }
+
+        let editor = session.editor
+        let sourceDocument = editor.document
+        let generation = UUID()
+        localProcessingGeneration = generation
+        localProcessingProgress = PDFOCRProgress(
+            completedPages: 0,
+            totalPages: pageIndexes.count
+        )
+        isLocalProcessing = true
+
+        localProcessingTask = Task { [weak self, weak editor] in
+            do {
+                let result = try await PDFOCREngine.process(
+                    document: sourceDocument,
+                    pageIndexes: pageIndexes,
+                    addsSearchableText: addsSearchableText,
+                    enhancement: enhancement,
+                    rasterQuality: rasterQuality,
+                    cropMarginsPercent: cropMarginsPercent,
+                    splitDoublePages: splitDoublePages
+                ) { [weak self] progress in
+                    guard self?.localProcessingGeneration == generation else {
+                        return
+                    }
+                    self?.localProcessingProgress = progress
+                }
+                try Task.checkCancellation()
+                guard
+                    let self,
+                    self.localProcessingGeneration == generation,
+                    let editor,
+                    self.session?.editor === editor
+                else {
+                    return
+                }
+
+                try editor.applyProcessedDocument(
+                    result.document,
+                    sourcePageIndexes: result.sourcePageIndexes
+                )
+                self.synchronizeAfterDocumentMutation()
+                self.isLocalProcessing = false
+                self.isLocalProcessingPresented = false
+                self.localProcessingTask = nil
+                let message = result.recognizedLineCount > 0
+                    ? "Processed \(pageIndexes.count) \(pageIndexes.count == 1 ? "page" : "pages") locally and added \(result.recognizedLineCount) recognized text \(result.recognizedLineCount == 1 ? "line" : "lines")."
+                    : "Processed \(pageIndexes.count) \(pageIndexes.count == 1 ? "page" : "pages") locally. No searchable text lines were added."
+                self.presentedError = PresentedError(
+                    title: "Local Processing Complete",
+                    message: message
+                )
+            } catch is CancellationError {
+                guard let self, self.localProcessingGeneration == generation else {
+                    return
+                }
+                self.isLocalProcessing = false
+                self.localProcessingTask = nil
+            } catch {
+                guard let self, self.localProcessingGeneration == generation else {
+                    return
+                }
+                self.isLocalProcessing = false
+                self.localProcessingTask = nil
+                self.present(error, title: "Could Not Process Pages")
+            }
+        }
+    }
+
+    func cancelLocalProcessing() {
+        localProcessingGeneration = UUID()
+        localProcessingTask?.cancel()
+        localProcessingTask = nil
+        isLocalProcessing = false
+        isLocalProcessingPresented = false
+    }
+
+    func presentConversion() {
+        guard canConvertActiveDocument else {
+            present(
+                DocumentPermissionError.conversionDenied,
+                title: "Conversion Not Permitted"
+            )
+            return
+        }
+        annotationState.end()
+        redactionState.end()
+        isPageOrganizerPresented = false
+        isFormEditorPresented = false
+        isLocalProcessingPresented = false
+        isConversionPresented = true
+    }
+
+    func dismissConversion() {
+        isConversionPresented = false
+    }
+
+    func chooseImagesForPDFCreation() {
+        isConversionPresented = false
+        isImageImporterPresented = true
+    }
+
+    func handleImageImport(_ result: Result<[URL], any Error>) {
+        switch result {
+        case .success(let urls):
+            guard !urls.isEmpty else {
+                return
+            }
+            do {
+                let inputs = try urls.map { url in
+                    let didAccess = url.startAccessingSecurityScopedResource()
+                    defer {
+                        if didAccess {
+                            url.stopAccessingSecurityScopedResource()
+                        }
+                    }
+                    return PDFImageInput(
+                        filename: url.lastPathComponent,
+                        data: try Data(contentsOf: url, options: [.mappedIfSafe])
+                    )
+                }
+                let document = try PDFNativeConversionEngine.document(from: inputs)
+                let sourceURL = urls[0]
+                let baseName = sourceURL.deletingPathExtension().lastPathComponent
+                presentExportPanel(
+                    document: document,
+                    sourceURL: sourceURL,
+                    suggestedFileName: "\(baseName.isEmpty ? "Images" : baseName) Converted.pdf",
+                    title: "Create PDF From Images",
+                    kind: .createdFromImages,
+                    continuation: nil,
+                    usesActiveSessionProtection: false
+                )
+            } catch {
+                present(error, title: "Could Not Create PDF From Images")
+            }
+        case .failure(let error):
+            let nsError = error as NSError
+            let isUserCancellation = nsError.domain == NSCocoaErrorDomain
+                && nsError.code == NSUserCancelledError
+            if !isUserCancellation {
+                present(error, title: "Could Not Choose Images")
+            }
+        }
+    }
+
+    func exportPagesAsImages(
+        pageIndexes: IndexSet,
+        format: PDFImageExportFormat,
+        dpi: Int
+    ) {
+        guard canConvertActiveDocument, let session else {
+            present(
+                DocumentPermissionError.conversionDenied,
+                title: "Conversion Not Permitted"
+            )
+            return
+        }
+
+        do {
+            let files = try PDFNativeConversionEngine.imageFiles(
+                from: session.editor.document,
+                pageIndexes: pageIndexes,
+                format: format,
+                dpi: dpi,
+                baseName: session.sourceURL.deletingPathExtension().lastPathComponent
+            )
+            let panel = NSOpenPanel()
+            panel.title = "Export PDF Pages as \(format.title) Images"
+            panel.message = "Choose an output folder. Existing files will not be overwritten."
+            panel.prompt = "Export Images"
+            panel.canChooseFiles = false
+            panel.canChooseDirectories = true
+            panel.canCreateDirectories = true
+            panel.allowsMultipleSelection = false
+            panel.directoryURL = session.sourceURL.deletingLastPathComponent()
+            panel.begin { [weak self] response in
+                guard response == .OK, let destinationDirectory = panel.url else {
+                    return
+                }
+                let didAccess = destinationDirectory.startAccessingSecurityScopedResource()
+                defer {
+                    if didAccess {
+                        destinationDirectory.stopAccessingSecurityScopedResource()
+                    }
+                }
+                do {
+                    let outputURLs = try PDFNativeConversionEngine.writeImageFiles(
+                        files,
+                        to: destinationDirectory
+                    )
+                    self?.isConversionPresented = false
+                    self?.exportReceipt = ExportReceipt(
+                        url: destinationDirectory,
+                        pageCount: outputURLs.count,
+                        kind: .convertedImages,
+                        fileSizeInBytes: files.reduce(0) { $0 + $1.data.count }
+                    )
+                } catch {
+                    self?.present(error, title: "Could Not Export Images")
+                }
+            }
+        } catch {
+            present(error, title: "Could Not Convert PDF Pages")
+        }
+    }
+
+    func exportPagesAsText(pageIndexes: IndexSet) {
+        guard canConvertActiveDocument, let session else {
+            present(
+                DocumentPermissionError.conversionDenied,
+                title: "Conversion Not Permitted"
+            )
+            return
+        }
+
+        do {
+            let text = try PDFNativeConversionEngine.searchableText(
+                from: session.editor.document,
+                pageIndexes: pageIndexes
+            )
+            let panel = NSSavePanel()
+            panel.title = "Export Searchable Text"
+            panel.message = "Choose a new UTF-8 text output. The PDF will remain unchanged."
+            panel.allowedContentTypes = [.plainText]
+            panel.canCreateDirectories = true
+            panel.isExtensionHidden = false
+            panel.directoryURL = session.sourceURL.deletingLastPathComponent()
+            panel.nameFieldStringValue = "\(session.sourceURL.deletingPathExtension().lastPathComponent) Text.txt"
+            panel.begin { [weak self] response in
+                guard response == .OK, let destinationURL = panel.url else {
+                    return
+                }
+                let didAccess = destinationURL.startAccessingSecurityScopedResource()
+                defer {
+                    if didAccess {
+                        destinationURL.stopAccessingSecurityScopedResource()
+                    }
+                }
+                do {
+                    try PDFNativeConversionEngine.writeText(text, to: destinationURL)
+                    self?.isConversionPresented = false
+                    self?.exportReceipt = ExportReceipt(
+                        url: destinationURL,
+                        pageCount: pageIndexes.count,
+                        kind: .convertedText,
+                        fileSizeInBytes: text.lengthOfBytes(using: .utf8)
+                    )
+                } catch {
+                    self?.present(error, title: "Could Not Export Text")
+                }
+            }
+        } catch {
+            present(error, title: "Could Not Convert PDF Text")
+        }
+    }
+
     func toggleAnnotationMode() {
         if annotationState.isActive {
             annotationState.end()
@@ -657,6 +1277,7 @@ final class AppState: ObservableObject {
             guard requireCommentingPermission() else {
                 return
             }
+            redactionState.end()
             isPageOrganizerPresented = false
             annotationState.begin()
         }
@@ -680,6 +1301,11 @@ final class AppState: ObservableObject {
             return
         }
         annotationState.selectedTool = tool
+
+        if tool == .signature {
+            isSignatureLibraryPresented = true
+            return
+        }
 
         guard tool.requiresTextSelection, annotationState.hasTextSelection else {
             return
@@ -722,6 +1348,126 @@ final class AppState: ObservableObject {
         }
     }
 
+    func addShapeAnnotation(_ placement: ShapeAnnotationPlacement) {
+        guard
+            requireCommentingPermission(),
+            let editor = session?.editor,
+            let kind = annotationState.selectedTool.shapeKind
+        else {
+            return
+        }
+        do {
+            let identifier = try editor.addShapeAnnotation(
+                kind: kind,
+                placement: placement,
+                color: annotationState.selectedColor,
+                lineWidth: annotationState.selectedLineWidth
+            )
+            synchronizeAfterDocumentMutation()
+            annotationState.selectAnnotation(
+                SelectedAnnotation(
+                    pageIndex: placement.pageIndex,
+                    identifier: identifier,
+                    kind: annotationState.selectedTool
+                )
+            )
+            annotationState.selectedTool = .select
+        } catch {
+            present(error, title: "Could Not Add Shape")
+        }
+    }
+
+    func requestBuiltInStamp(at placement: AnnotationPlacement) {
+        guard requireCommentingPermission(), let editor = session?.editor else {
+            return
+        }
+        do {
+            let identifier = try editor.addBuiltInStamp(
+                pageIndex: placement.pageIndex,
+                point: placement.point,
+                preset: annotationState.selectedStamp
+            )
+            synchronizeAfterDocumentMutation()
+            annotationState.selectAnnotation(
+                SelectedAnnotation(
+                    pageIndex: placement.pageIndex,
+                    identifier: identifier,
+                    kind: .stamp
+                )
+            )
+            annotationState.selectedTool = .select
+        } catch {
+            present(error, title: "Could Not Add Stamp")
+        }
+    }
+
+    func setStampPreset(_ preset: StampPreset) {
+        annotationState.selectedStamp = preset
+    }
+
+    func moveAnnotation(_ selection: SelectedAnnotation, by translation: CGSize) {
+        guard
+            requireCommentingPermission(),
+            let editor = session?.editor,
+            let identifier = selection.identifier
+        else {
+            return
+        }
+        do {
+            try editor.moveAnnotation(
+                pageIndex: selection.pageIndex,
+                identifier: identifier,
+                by: translation
+            )
+            synchronizeAfterDocumentMutation()
+        } catch {
+            present(error, title: "Could Not Move Annotation")
+        }
+    }
+
+    func resizeSelectedAnnotation(scale: CGFloat) {
+        guard
+            requireCommentingPermission(),
+            let editor = session?.editor,
+            let selection = annotationState.selectedAnnotation,
+            let identifier = selection.identifier
+        else {
+            return
+        }
+        do {
+            try editor.resizeAnnotation(
+                pageIndex: selection.pageIndex,
+                identifier: identifier,
+                scale: scale
+            )
+            synchronizeAfterDocumentMutation()
+        } catch {
+            present(error, title: "Could Not Resize Annotation")
+        }
+    }
+
+    func rotateSelectedVisualSignature(clockwise: Bool) {
+        guard
+            requireCommentingPermission(),
+            let editor = session?.editor,
+            let selection = annotationState.selectedAnnotation,
+            selection.kind == .signature,
+            let identifier = selection.identifier
+        else {
+            return
+        }
+        do {
+            try editor.rotateVisualSignature(
+                pageIndex: selection.pageIndex,
+                identifier: identifier,
+                clockwise: clockwise
+            )
+            synchronizeAfterDocumentMutation()
+        } catch {
+            present(error, title: "Could Not Rotate Visual Signature")
+        }
+    }
+
     func requestTextNote(at placement: AnnotationPlacement) {
         guard requireCommentingPermission() else {
             return
@@ -732,6 +1478,143 @@ final class AppState: ObservableObject {
             annotationIdentifier: nil,
             initialText: ""
         )
+    }
+
+    func chooseVisualSignature(_ signature: StoredSignature) {
+        guard annotationState.isActive, requireCommentingPermission() else {
+            return
+        }
+        annotationState.selectedSignatureID = signature.id
+        annotationState.selectedTool = .signature
+        isSignatureLibraryPresented = false
+    }
+
+    func importVisualSignature(data: Data, displayName: String) {
+        do {
+            let stored = try signatureLibrary.importImage(
+                data: data,
+                displayName: displayName
+            )
+            chooseVisualSignature(stored)
+        } catch {
+            present(error, title: "Could Not Import Visual Signature")
+        }
+    }
+
+    func importVisualSignature(at url: URL) {
+        let hasScopedAccess = url.startAccessingSecurityScopedResource()
+        defer {
+            if hasScopedAccess {
+                url.stopAccessingSecurityScopedResource()
+            }
+        }
+        do {
+            guard url.isFileURL else {
+                throw SignatureLibraryError.invalidImage
+            }
+            let data = try Data(contentsOf: url)
+            importVisualSignature(
+                data: data,
+                displayName: url.deletingPathExtension().lastPathComponent
+            )
+        } catch {
+            present(error, title: "Could Not Import Visual Signature")
+        }
+    }
+
+    func createVisualSignature(
+        strokes: [InkStroke],
+        canvasSize: CGSize,
+        displayName: String
+    ) {
+        do {
+            let stored = try signatureLibrary.createFromDrawing(
+                strokes: strokes,
+                canvasSize: canvasSize,
+                displayName: displayName
+            )
+            chooseVisualSignature(stored)
+        } catch {
+            present(error, title: "Could Not Save Visual Signature")
+        }
+    }
+
+    func deleteVisualSignature(_ signature: StoredSignature) {
+        do {
+            try signatureLibrary.delete(signature.id)
+            if annotationState.selectedSignatureID == signature.id {
+                annotationState.selectedSignatureID = nil
+            }
+        } catch {
+            present(error, title: "Could Not Delete Visual Signature")
+        }
+    }
+
+    func dismissVisualSignatureLibrary() {
+        isSignatureLibraryPresented = false
+        if annotationState.selectedSignatureID == nil,
+           annotationState.selectedTool == .signature {
+            annotationState.selectedTool = .select
+        }
+    }
+
+    func requestVisualSignature(at placement: AnnotationPlacement) {
+        guard annotationState.isActive, requireCommentingPermission() else {
+            return
+        }
+        guard let signatureID = annotationState.selectedSignatureID else {
+            isSignatureLibraryPresented = true
+            return
+        }
+
+        do {
+            let imageData = try signatureLibrary.imageData(for: signatureID)
+            guard let editor = session?.editor else {
+                return
+            }
+            let identifier = try editor.addVisualSignature(
+                pageIndex: placement.pageIndex,
+                point: placement.point,
+                imageData: imageData,
+                size: annotationState.selectedSignatureSize
+            )
+            synchronizeAfterDocumentMutation()
+            annotationState.selectAnnotation(
+                SelectedAnnotation(
+                    pageIndex: placement.pageIndex,
+                    identifier: identifier,
+                    kind: .signature
+                )
+            )
+        } catch {
+            present(error, title: "Could Not Place Visual Signature")
+        }
+    }
+
+    func setVisualSignatureSize(_ size: SignatureSizePreset) {
+        annotationState.selectedSignatureSize = size
+        guard requireCommentingPermission() else {
+            return
+        }
+        guard
+            let editor = session?.editor,
+            let selection = annotationState.selectedAnnotation,
+            selection.kind == .signature,
+            let identifier = selection.identifier
+        else {
+            return
+        }
+
+        do {
+            try editor.updateVisualSignatureSize(
+                pageIndex: selection.pageIndex,
+                identifier: identifier,
+                size: size
+            )
+            synchronizeAfterDocumentMutation()
+        } catch {
+            present(error, title: "Could Not Resize Visual Signature")
+        }
     }
 
     func requestEditSelectedTextNote() {
@@ -893,7 +1776,7 @@ final class AppState: ObservableObject {
             kind = .underline
         case .strikethrough:
             kind = .strikethrough
-        case .select, .freehand, .textNote:
+        case .select, .freehand, .textNote, .rectangle, .oval, .line, .arrow, .stamp, .signature:
             return
         }
 
@@ -1198,6 +2081,29 @@ final class AppState: ObservableObject {
         presentWorkingCopyExport(continuation: nil)
     }
 
+    func exportFlattenedForm() {
+        guard requireFormFieldEntryPermission(), let session else {
+            return
+        }
+
+        do {
+            let flattened = try PDFFormEngine.flattenedDocument(from: session.editor.document)
+            presentExportPanel(
+                document: flattened,
+                sourceURL: session.sourceURL,
+                suggestedFileName: suggestedOutputFileName(
+                    for: session.sourceURL,
+                    suffix: "Flattened"
+                ),
+                title: "Export Flattened Form",
+                kind: .flattenedForm,
+                continuation: nil
+            )
+        } catch {
+            present(error, title: "Could Not Flatten Form")
+        }
+    }
+
     private func presentWorkingCopyExport(continuation: PendingDocumentAction?) {
         guard let session else {
             if let continuation {
@@ -1296,16 +2202,20 @@ final class AppState: ObservableObject {
         title: String,
         kind: ExportKind,
         continuation: PendingDocumentAction?,
-        encryptedExportConfirmed: Bool = false
+        encryptedExportConfirmed: Bool = false,
+        usesActiveSessionProtection: Bool = true
     ) {
-        if session?.securityContext.isEncrypted == true, !encryptedExportConfirmed {
+        if usesActiveSessionProtection,
+           session?.securityContext.isEncrypted == true,
+           !encryptedExportConfirmed {
             pendingEncryptedExport = PendingEncryptedExport(
                 document: document,
                 sourceURL: sourceURL,
                 suggestedFileName: suggestedFileName,
                 title: title,
                 kind: kind,
-                continuation: continuation
+                continuation: continuation,
+                usesActiveSessionProtection: usesActiveSessionProtection
             )
             return
         }
@@ -1318,6 +2228,9 @@ final class AppState: ObservableObject {
         panel.isExtensionHidden = false
         panel.nameFieldStringValue = suggestedFileName
         panel.directoryURL = sourceURL.deletingLastPathComponent()
+
+        let compressionAccessory = ExportCompressionAccessoryController()
+        panel.accessoryView = compressionAccessory.view
 
         panel.begin { [weak self] response in
             guard let self else {
@@ -1341,7 +2254,9 @@ final class AppState: ObservableObject {
                 sourceURL: sourceURL,
                 destinationURL: destinationURL,
                 kind: kind,
-                continuation: continuation
+                compression: compressionAccessory.selectedCompression,
+                continuation: continuation,
+                usesActiveSessionProtection: usesActiveSessionProtection
             )
         }
     }
@@ -1358,7 +2273,8 @@ final class AppState: ObservableObject {
             title: pendingEncryptedExport.title,
             kind: pendingEncryptedExport.kind,
             continuation: pendingEncryptedExport.continuation,
-            encryptedExportConfirmed: true
+            encryptedExportConfirmed: true,
+            usesActiveSessionProtection: pendingEncryptedExport.usesActiveSessionProtection
         )
     }
 
@@ -1377,10 +2293,14 @@ final class AppState: ObservableObject {
         sourceURL: URL,
         destinationURL: URL,
         kind: ExportKind,
-        continuation: PendingDocumentAction? = nil
+        compression: PDFExportCompression = .standard,
+        continuation: PendingDocumentAction? = nil,
+        usesActiveSessionProtection: Bool = true
     ) {
         do {
-            let securityContext = session?.securityContext
+            let securityContext = usesActiveSessionProtection
+                ? session?.securityContext
+                : nil
             let outputProtection: PDFOutputProtection = securityContext?.isEncrypted == true
                 ? .reuseSessionPassword
                 : .none
@@ -1392,22 +2312,24 @@ final class AppState: ObservableObject {
                 sessionPassword: outputProtection == .reuseSessionPassword
                     ? session?.sessionPassword
                     : nil,
-                accessPermissions: securityContext?.accessPermissions ?? document.accessPermissions
+                accessPermissions: securityContext?.accessPermissions ?? document.accessPermissions,
+                compression: compression
             )
 
-            if
-                kind == .workingCopy,
-                let editor = session?.editor,
-                editor.document === document
-            {
-                editor.markCurrentRevisionExported()
+            if usesActiveSessionProtection, let editor = session?.editor {
+                let exportedCurrentWorkingCopy = kind == .workingCopy && editor.document === document
+                if exportedCurrentWorkingCopy || kind == .flattenedForm {
+                    editor.markCurrentRevisionExported()
+                }
             }
 
             exportReceipt = ExportReceipt(
                 url: result.url,
                 pageCount: result.pageCount,
-                kind: kind
+                kind: kind,
+                fileSizeInBytes: result.fileSizeInBytes
             )
+            AppDiagnostics.record(.exportCompleted)
 
             if let continuation {
                 performDocumentAction(continuation)
@@ -1474,6 +2396,7 @@ final class AppState: ObservableObject {
     ) {
         let message = (error as? LocalizedError)?.errorDescription ?? fallbackMessage
         presentedError = PresentedError(title: title, message: message)
+        AppDiagnostics.record(.recoverableOperationFailed)
     }
 
     private func performPageOperation(
@@ -1520,6 +2443,36 @@ final class AppState: ObservableObject {
     private func requireDocumentAssemblyPermission() -> Bool {
         guard canAssembleActiveDocument else {
             present(DocumentPermissionError.documentAssemblyDenied, title: "Page Changes Not Permitted")
+            return false
+        }
+        return true
+    }
+
+    private func requireFormFieldEntryPermission() -> Bool {
+        guard session?.securityContext.allowsFormFieldEntry == true else {
+            present(
+                DocumentPermissionError.formFieldEntryDenied,
+                title: "Form Filling Not Permitted"
+            )
+            return false
+        }
+        return true
+    }
+
+    private func requireRedactionPermission() -> Bool {
+        guard canRedactActiveDocument else {
+            present(DocumentPermissionError.redactionDenied, title: "Redaction Not Permitted")
+            return false
+        }
+        return true
+    }
+
+    private func requireDocumentProcessingPermission() -> Bool {
+        guard canProcessActiveDocument else {
+            present(
+                DocumentPermissionError.documentProcessingDenied,
+                title: "Local Processing Not Permitted"
+            )
             return false
         }
         return true

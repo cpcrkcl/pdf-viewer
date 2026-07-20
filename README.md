@@ -1,74 +1,66 @@
 # PDFViewer
 
-PDFViewer is a local-first native macOS PDF reader and organizer built with SwiftUI, AppKit, and PDFKit. The original scope baseline lives in [`MVP_SPEC.md`](MVP_SPEC.md); implemented post-MVP annotation, security, and navigation requirements live in [`POST_MVP_SPEC.md`](POST_MVP_SPEC.md).
+PDFViewer is an original, local-first macOS PDF utility built with Swift 6, SwiftUI, AppKit, PDFKit, Vision, Core Image, and Core Graphics. It reads and edits a protected in-memory working copy, never silently replaces the source, and performs OCR, enhancement, redaction, and conversion entirely on the Mac.
 
-## Implemented features
+The implementation follows the attached `pdf-mac-app-gameplan.pdf`. Historical milestone requirements remain in `MVP_SPEC.md`, `POST_MVP_SPEC.md`, and `FEATURE_SPEC.md`; the current support matrix is in `RELEASE_STATUS.md`.
 
-- Open a local PDF through the macOS file importer.
-- Open one local PDF by dropping it from Finder onto the reader.
-- Keep the source file open as read-only security-scoped input.
-- Display PDF pages with a native PDFKit reader.
-- Navigate with synchronized page thumbnails, a page-number field, PDF outlines, local bookmarks, search results, and Back/Forward history.
-- Use a three-tab reader sidebar for Thumbnails, Contents, and Bookmarks.
-- Collapse the sidebar or resize it between 136 and 260 points without changing the document.
-- Use the complete reader and organizer from a 720×520 content area through full screen; compact windows move secondary actions into clear overflow menus.
-- Switch between single-page, two-page, and continuous layouts.
-- Switch between distinct Day and Night workspace themes without modifying the PDF.
-- Fit, zoom in, and zoom out.
-- Close the active document without writing to it.
-- Reopen one of the ten most recent documents using security-scoped bookmarks.
-- Present recoverable errors for missing, unreadable, corrupt, and non-PDF input.
-- Unlock password-protected PDFs through a native retryable prompt while preserving the current session on failure or cancellation.
-- Keep passwords only in active-session memory and enforce source commenting, assembly, and copying permissions.
-- Search existing PDF text case-insensitively, highlight all results, and navigate between matches.
-- Explain when an image-only PDF has no searchable text and OCR is not available yet.
-- Create a safe in-memory working copy before editing pages.
-- Select one or more pages in the page organizer, then move, rotate, or delete them with undo and redo.
-- Drag selected organizer rows to reorder one or multiple pages while preserving their relative order.
-- Add selected pages from another local PDF or merge an entire local PDF into the working copy.
-- Extract selected pages into a separate PDF.
-- Export a distinct output PDF through a temporary file that is reopened and validated before completion.
-- Confirm successful exports with a persistent receipt and a Show in Finder action.
-- Warn before Close, replacement Open, window close, or Quit would discard an unexported revision.
-- Treat the original and each validated full-document export as safe revisions; later edits warn again.
-- Use native menu shortcuts for Open, Close, undo/redo, search, page navigation, zoom, and viewing modes.
-- Keep source PDFs unchanged while working-copy changes are pending and after export.
-- Create highlight, underline, strikethrough, freehand ink, and text-note annotations with compact tool symbols and Black as the default color.
-- Edit, restyle, and delete PDFViewer-created annotations while leaving third-party annotations visible and read-only.
-- Preserve annotations through validated export and reopen.
-- Keep encrypted working-copy and extracted output encrypted with the active session password after an explicit security warning.
-- Persist local page bookmarks by SHA-256 document identity across launches without embedding them in PDF data.
-- Preserve bookmark, outline, and history destinations through page reorder, deletion, undo, and redo using stable working-page identities.
-- Bound untrusted outline traversal to 128 levels, 20,000 nodes, and 512-character labels.
+The major feasibility, privacy, redaction, revision, helper, and distribution choices are recorded in `docs/ARCHITECTURE_DECISIONS.md`.
 
-## Approved boundaries and deferred capabilities
+## Supported workflows
 
-Local OCR, scan enhancement, forms, signatures, redaction, conversion, compression, cloud synchronization, collaboration, printing, advanced annotation tools, outline editing, bookmark synchronization, and password-protected secondary imports are not implemented. Source PDFs are never replaced or overwritten.
+- Open, cancel, close, drag in, reopen, and manage recent local PDFs, including password-protected documents; large working copies are prepared away from the main actor behind a visible loading state.
+- Use independent windows or tabs, thumbnails, outlines, local bookmarks, Back/Forward history, page-number navigation, three layouts, zoom, and Day/Night/Sepia themes.
+- Search existing or locally OCR-created text with highlights and next/previous navigation.
+- Select, add, merge, delete, rotate, reorder, extract, and export pages with undo/redo.
+- Add, select, move, resize, restyle, delete, export, and reopen highlights, underlines, strikethroughs, freehand ink, text notes, rectangles, ovals, lines, arrows, built-in stamps, and visual-signature image stamps; visual signatures can also be rotated.
+- Discover and fill AcroForm text, checkbox, radio, and choice fields; validate required fields, reset them, export interactive values, or flatten a sharing copy.
+- Mark multiple redaction regions, optionally burn a visible reason label into them, review them, explicitly confirm permanent application, clear metadata, and remove underlying content by rasterizing only affected pages.
+- Run Vision OCR and deterministic scan enhancement locally with before/after preview, 150/200/300-DPI output, deskew/perspective correction, noise and shadow reduction, background whitening, grayscale or clean-scan processing, margin cropping, double-page splitting, progress, cancellation, and undo.
+- Convert selected PDF pages to PNG, JPEG, or TIFF; export searchable UTF-8 text; create a PDF from local images; and reopen/validate generated PDFs.
+- Print the current working copy and export Standard, Reduced Size, or Compact PDFs, including protected output when the source session requires it.
+- Confirm external URL links before opening them and block document-triggered printing.
 
-## Permanent product exclusions
+Every file-producing PDF workflow uses a temporary output, reopens and validates it, then places the completed file at the user-selected destination. Page-image conversion never overwrites an existing output filename. The app sandbox has only user-selected read/write access and no network entitlement.
 
-PDFViewer will not add AI document assistants, generated summaries, document chat, generative extraction, recommendations, or local or remote inference over document contents. PDF data stays on the Mac and is never sent to an inference service. Local OCR remains a separate deferred capability and is not part of the current milestone.
+## Honest boundaries
+
+- Visual signatures are image annotations, not certificate-backed or identity-verified digital signatures.
+- AcroForm is supported; XFA is not claimed.
+- Text notes and annotations do not provide Word-processor-like editing of existing PDF text. PDFKit cannot reliably reflow arbitrary existing content; see `spikes/README.md`.
+- Native conversion covers PDF-to-image, PDF-to-text, images-to-PDF, and page extraction. Office-format conversion helpers are deliberately not bundled; see `docs/CONVERSION_HELPERS.md`.
+- Handwriting-specific OCR guarantees, cryptographic signing, cloud sync, collaboration, and AI document assistants are unsupported.
+- The app never automatically replaces the original PDF.
 
 ## Build and test
 
-The repository uses the full Xcode installation at `/Applications/Xcode.app`. The active system developer directory may still point at Command Line Tools, so commands set `DEVELOPER_DIR` explicitly.
+Requires macOS 14 or later and a full Xcode installation.
 
 ```sh
-DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
-  xcodebuild \
+xcodebuild \
   -project PDFViewer.xcodeproj \
   -scheme PDFViewer \
   -destination 'platform=macOS,arch=arm64' \
-  build
+  build CODE_SIGNING_ALLOWED=NO
 ```
 
 ```sh
-DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
-  xcodebuild \
+xcodebuild \
   -project PDFViewer.xcodeproj \
   -scheme PDFViewer \
   -destination 'platform=macOS,arch=arm64' \
-  test
+  test CODE_SIGNING_ALLOWED=NO
 ```
 
-The automated suite covers document validation/source preservation, recent-document persistence, responsive layouts, annotation ownership and round trips, encrypted open/export behavior, permission enforcement, stable page identity, bounded outline parsing, bookmark persistence, navigation-history branching, guarded lifecycle actions, drag reorder, search, export feedback, undo/redo, and page extraction.
+The suite covers source preservation, asynchronous large-document preparation and cancellation, malformed and protected input, permissions, page operations, search, navigation identity, annotations and visual signatures, forms and flattening, permanent redaction, local OCR/enhancement/cropping, conversion, compression, encrypted output, multiple windows, lifecycle guards, and responsive reader behavior.
+
+## Package a release
+
+```sh
+./scripts/package-release.sh
+```
+
+With no Developer ID identity, the script produces a locally verifiable ad-hoc-signed DMG. For distribution, set `CODE_SIGN_IDENTITY` to a Developer ID Application identity and `NOTARY_PROFILE` to a `notarytool` Keychain profile; the script signs, submits, staples, verifies, and emits a SHA-256 checksum. See `RELEASE.md`.
+
+## Privacy and security
+
+There are no accounts, analytics, cloud services, remote OCR calls, or inference dependencies. Document contents, recognized text, page images, passwords, and signatures are not logged or uploaded. Report security issues using the private process in `SECURITY.md` rather than a public issue.
