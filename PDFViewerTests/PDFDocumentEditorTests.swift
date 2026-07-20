@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import PDFKit
 import XCTest
@@ -338,6 +339,243 @@ final class PDFDocumentEditorTests: XCTestCase {
         XCTAssertFalse(editor.canUndo)
     }
 
+    /// Spike required before the visual-signature implementation: confirm
+    /// that PDFKit serializes the custom stamp drawing into an appearance
+    /// stream that other readers can render after reopen.
+    func testSpikeCustomStampAppearanceSurvivesPDFKitRoundTrip() throws {
+        let document = try makeDocument(pages: ["Signature appearance spike"])
+        let page = try XCTUnwrap(document.page(at: 0))
+        let signatureImage = NSImage(size: NSSize(width: 160, height: 60))
+        signatureImage.lockFocus()
+        NSColor.systemRed.setFill()
+        NSBezierPath(roundedRect: NSRect(x: 0, y: 0, width: 160, height: 60), xRadius: 10, yRadius: 10).fill()
+        signatureImage.unlockFocus()
+
+        let annotation = SignatureAppearanceSpikeAnnotation(
+            bounds: CGRect(x: 180, y: 320, width: 160, height: 60),
+            image: signatureImage
+        )
+        page.addAnnotation(annotation)
+        XCTAssertGreaterThan(redPixelCount(on: page), 1_000)
+
+        let data = try XCTUnwrap(document.dataRepresentation())
+        let reopened = try XCTUnwrap(PDFDocument(data: data))
+        let reopenedPage = try XCTUnwrap(reopened.page(at: 0))
+
+        XCTAssertEqual(reopenedPage.annotations.first?.type, PDFAnnotationSubtype.stamp.pdfTypeName)
+        XCTAssertGreaterThan(redPixelCount(on: reopenedPage), 1_000)
+    }
+
+    func testVisualSignaturePlacementUndoRedoAndOwnershipRoundTrip() throws {
+        let editor = try makeEditor(pages: ["Sign here"])
+        let imageData = try makeSignatureImageData()
+
+        let identifier = try editor.addVisualSignature(
+            pageIndex: 0,
+            point: CGPoint(x: 300, y: 300),
+            imageData: imageData,
+            size: .medium
+        )
+
+        let annotation = try XCTUnwrap(editor.document.page(at: 0)?.annotations.first)
+        XCTAssertEqual(annotation.type, PDFAnnotationSubtype.stamp.pdfTypeName)
+        XCTAssertEqual(AnnotationIdentifier(annotation: annotation), identifier)
+        XCTAssertEqual(VisualSignatureAnnotation.imageData(from: annotation), imageData)
+        XCTAssertTrue(editor.canUndo)
+        XCTAssertTrue(editor.hasUnexportedChanges)
+
+        try editor.undo()
+        XCTAssertEqual(editor.document.page(at: 0)?.annotations.count, 0)
+        try editor.redo()
+        XCTAssertEqual(editor.document.page(at: 0)?.annotations.count, 1)
+
+        let exportedData = try XCTUnwrap(editor.document.dataRepresentation())
+        let reopened = try XCTUnwrap(PDFDocument(data: exportedData))
+        let reopenedAnnotation = try XCTUnwrap(reopened.page(at: 0)?.annotations.first)
+        XCTAssertEqual(AnnotationIdentifier(annotation: reopenedAnnotation), identifier)
+        XCTAssertEqual(VisualSignatureAnnotation.imageData(from: reopenedAnnotation), imageData)
+        XCTAssertGreaterThan(redPixelCount(on: try XCTUnwrap(reopened.page(at: 0))), 400)
+    }
+
+    func testVisualSignatureSizeCanBeRestyledAsOneRevision() throws {
+        let editor = try makeEditor(pages: ["Sign here"])
+        let identifier = try editor.addVisualSignature(
+            pageIndex: 0,
+            point: CGPoint(x: 300, y: 300),
+            imageData: try makeSignatureImageData(),
+            size: .small
+        )
+        let originalBounds = try XCTUnwrap(editor.document.page(at: 0)?.annotations.first?.bounds)
+
+        try editor.updateVisualSignatureSize(
+            pageIndex: 0,
+            identifier: identifier,
+            size: .large
+        )
+
+        let enlargedBounds = try XCTUnwrap(editor.document.page(at: 0)?.annotations.first?.bounds)
+        XCTAssertGreaterThan(enlargedBounds.width, originalBounds.width)
+        XCTAssertEqual(enlargedBounds.midX, originalBounds.midX, accuracy: 0.5)
+        try editor.undo()
+        XCTAssertEqual(editor.document.page(at: 0)?.annotations.first?.bounds, originalBounds)
+    }
+
+    func testShapeAndBuiltInStampAnnotationsSurviveRoundTrip() throws {
+        let editor = try makeEditor(pages: ["Review these shapes"])
+        let placements = [
+            ShapeAnnotationPlacement(
+                pageIndex: 0,
+                startPoint: CGPoint(x: 80, y: 120),
+                endPoint: CGPoint(x: 200, y: 190)
+            ),
+            ShapeAnnotationPlacement(
+                pageIndex: 0,
+                startPoint: CGPoint(x: 230, y: 120),
+                endPoint: CGPoint(x: 350, y: 190)
+            ),
+            ShapeAnnotationPlacement(
+                pageIndex: 0,
+                startPoint: CGPoint(x: 80, y: 240),
+                endPoint: CGPoint(x: 200, y: 300)
+            ),
+            ShapeAnnotationPlacement(
+                pageIndex: 0,
+                startPoint: CGPoint(x: 230, y: 240),
+                endPoint: CGPoint(x: 350, y: 300)
+            ),
+        ]
+
+        let rectangleID = try editor.addShapeAnnotation(
+            kind: .rectangle,
+            placement: placements[0],
+            color: .red,
+            lineWidth: .standard
+        )
+        _ = try editor.addShapeAnnotation(
+            kind: .oval,
+            placement: placements[1],
+            color: .blue,
+            lineWidth: .fine
+        )
+        _ = try editor.addShapeAnnotation(
+            kind: .line,
+            placement: placements[2],
+            color: .black,
+            lineWidth: .bold
+        )
+        _ = try editor.addShapeAnnotation(
+            kind: .arrow,
+            placement: placements[3],
+            color: .green,
+            lineWidth: .standard
+        )
+        let stampID = try editor.addBuiltInStamp(
+            pageIndex: 0,
+            point: CGPoint(x: 300, y: 400),
+            preset: .approved
+        )
+
+        let data = try XCTUnwrap(editor.document.dataRepresentation())
+        let reopened = try XCTUnwrap(PDFDocument(data: data))
+        let annotations = try XCTUnwrap(reopened.page(at: 0)).annotations
+        XCTAssertEqual(
+            annotations.map(\.type),
+            [
+                PDFAnnotationSubtype.square.pdfTypeName,
+                PDFAnnotationSubtype.circle.pdfTypeName,
+                PDFAnnotationSubtype.line.pdfTypeName,
+                PDFAnnotationSubtype.line.pdfTypeName,
+                PDFAnnotationSubtype.stamp.pdfTypeName,
+            ]
+        )
+        XCTAssertEqual(AnnotationIdentifier(annotation: annotations[0]), rectangleID)
+        XCTAssertEqual(annotations[2].endLineStyle, .none)
+        XCTAssertEqual(annotations[3].endLineStyle, .closedArrow)
+        XCTAssertEqual(
+            annotations[4].stampName?.trimmingCharacters(in: CharacterSet(charactersIn: "/")),
+            StampPreset.approved.pdfName
+        )
+        XCTAssertEqual(AnnotationIdentifier(annotation: annotations[4]), stampID)
+        XCTAssertTrue(annotations.allSatisfy(\.shouldPrint))
+    }
+
+    func testOwnedAnnotationMoveResizeAndUndoClampToPage() throws {
+        let editor = try makeEditor(pages: ["Transform this shape"])
+        let identifier = try editor.addShapeAnnotation(
+            kind: .rectangle,
+            placement: ShapeAnnotationPlacement(
+                pageIndex: 0,
+                startPoint: CGPoint(x: 100, y: 100),
+                endPoint: CGPoint(x: 220, y: 180)
+            ),
+            color: .red,
+            lineWidth: .standard
+        )
+        let initialBounds = try XCTUnwrap(editor.document.page(at: 0)?.annotations.first?.bounds)
+
+        try editor.moveAnnotation(
+            pageIndex: 0,
+            identifier: identifier,
+            by: CGSize(width: 1_000, height: 1_000)
+        )
+        let pageBounds = try XCTUnwrap(editor.document.page(at: 0)?.bounds(for: .cropBox))
+        let movedBounds = try XCTUnwrap(editor.document.page(at: 0)?.annotations.first?.bounds)
+        XCTAssertEqual(movedBounds.maxX, pageBounds.maxX, accuracy: 0.5)
+        XCTAssertEqual(movedBounds.maxY, pageBounds.maxY, accuracy: 0.5)
+
+        try editor.resizeAnnotation(
+            pageIndex: 0,
+            identifier: identifier,
+            scale: 0.5
+        )
+        let resizedBounds = try XCTUnwrap(editor.document.page(at: 0)?.annotations.first?.bounds)
+        XCTAssertEqual(resizedBounds.width, movedBounds.width * 0.5, accuracy: 0.5)
+        XCTAssertEqual(resizedBounds.height, movedBounds.height * 0.5, accuracy: 0.5)
+
+        try editor.undo()
+        XCTAssertEqual(editor.document.page(at: 0)?.annotations.first?.bounds, movedBounds)
+        try editor.undo()
+        XCTAssertEqual(editor.document.page(at: 0)?.annotations.first?.bounds, initialBounds)
+    }
+
+    func testVisualSignatureRotationPersistsAndIsUndoable() throws {
+        let editor = try makeEditor(pages: ["Rotate this visual signature"])
+        let identifier = try editor.addVisualSignature(
+            pageIndex: 0,
+            point: CGPoint(x: 300, y: 300),
+            imageData: try makeSignatureImageData(),
+            size: .medium
+        )
+        let initialBounds = try XCTUnwrap(editor.document.page(at: 0)?.annotations.first?.bounds)
+
+        try editor.rotateVisualSignature(
+            pageIndex: 0,
+            identifier: identifier,
+            clockwise: true
+        )
+
+        let rotated = try XCTUnwrap(editor.document.page(at: 0)?.annotations.first)
+        XCTAssertEqual(VisualSignatureAnnotation.rotationQuarterTurns(from: rotated), 1)
+        XCTAssertEqual(rotated.bounds.width, initialBounds.height, accuracy: 0.5)
+        XCTAssertEqual(rotated.bounds.height, initialBounds.width, accuracy: 0.5)
+
+        let reopened = try XCTUnwrap(PDFDocument(data: try XCTUnwrap(editor.document.dataRepresentation())))
+        XCTAssertEqual(
+            VisualSignatureAnnotation.rotationQuarterTurns(
+                from: try XCTUnwrap(reopened.page(at: 0)?.annotations.first)
+            ),
+            1
+        )
+        XCTAssertGreaterThan(redPixelCount(on: try XCTUnwrap(reopened.page(at: 0))), 400)
+        try editor.undo()
+        XCTAssertEqual(
+            VisualSignatureAnnotation.rotationQuarterTurns(
+                from: try XCTUnwrap(editor.document.page(at: 0)?.annotations.first)
+            ),
+            0
+        )
+    }
+
     private func makeEditor(pages: [String]) throws -> PDFDocumentEditor {
         try PDFDocumentEditor(document: makeDocument(pages: pages))
     }
@@ -364,6 +602,58 @@ final class PDFDocumentEditorTests: XCTestCase {
         }
     }
 
+    private func redPixelCount(on page: PDFPage) -> Int {
+        let image = page.thumbnail(of: NSSize(width: 612, height: 792), for: .mediaBox)
+        guard
+            let data = image.tiffRepresentation,
+            let bitmap = NSBitmapImageRep(data: data)
+        else {
+            return 0
+        }
+
+        var count = 0
+        for y in 0..<bitmap.pixelsHigh {
+            for x in 0..<bitmap.pixelsWide {
+                guard let color = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB) else {
+                    continue
+                }
+                if color.redComponent > 0.75,
+                   color.greenComponent < 0.35,
+                   color.blueComponent < 0.35 {
+                    count += 1
+                }
+            }
+        }
+        return count
+    }
+
+    private func makeSignatureImageData() throws -> Data {
+        let image = NSImage(size: NSSize(width: 240, height: 80))
+        image.lockFocus()
+        NSColor.clear.setFill()
+        NSRect(origin: .zero, size: image.size).fill()
+        NSColor.systemRed.setStroke()
+        let path = NSBezierPath()
+        path.lineWidth = 8
+        path.lineCapStyle = .round
+        path.move(to: NSPoint(x: 12, y: 16))
+        path.curve(
+            to: NSPoint(x: 225, y: 58),
+            controlPoint1: NSPoint(x: 70, y: 76),
+            controlPoint2: NSPoint(x: 150, y: 5)
+        )
+        path.stroke()
+        image.unlockFocus()
+        guard
+            let tiff = image.tiffRepresentation,
+            let bitmap = NSBitmapImageRep(data: tiff),
+            let data = bitmap.representation(using: .png, properties: [:])
+        else {
+            throw TestError.couldNotCreateSignature
+        }
+        return data
+    }
+
     private func makeTemporaryDirectory() throws -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -373,5 +663,30 @@ final class PDFDocumentEditorTests: XCTestCase {
 
     private enum TestError: Error {
         case couldNotOpenFixture
+        case couldNotCreateSignature
+    }
+}
+
+private final class SignatureAppearanceSpikeAnnotation: PDFAnnotation {
+    private let signatureImage: NSImage
+
+    init(bounds: CGRect, image: NSImage) {
+        self.signatureImage = image
+        super.init(bounds: bounds, forType: .stamp, withProperties: nil)
+    }
+
+    override func draw(with box: PDFDisplayBox, in context: CGContext) {
+        super.draw(with: box, in: context)
+        guard let image = signatureImage.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+            return
+        }
+        context.saveGState()
+        context.draw(image, in: bounds)
+        context.restoreGState()
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        nil
     }
 }

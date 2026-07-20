@@ -8,34 +8,38 @@ final class PDFViewerUITests: XCTestCase {
     private var protectedFixtureDirectory: URL?
     private var navigationFixtureDirectory: URL?
 
-    override func setUpWithError() throws {
-        continueAfterFailure = false
-        app = XCUIApplication()
-        app.launchArguments = [
-            "-ApplePersistenceIgnoreState", "YES",
-            "-PDFViewerUITestWindowWidth", "1100",
-            "-PDFViewerUITestWindowHeight", "720",
-        ]
-        app.launch()
-        app.activate()
-        XCTAssertTrue(app.buttons["Choose PDF..."].waitForExistence(timeout: 5))
+    override func setUp() async throws {
+        await MainActor.run {
+            continueAfterFailure = false
+            app = XCUIApplication()
+            app.launchArguments = [
+                "-ApplePersistenceIgnoreState", "YES",
+                "-PDFViewerUITestWindowWidth", "1100",
+                "-PDFViewerUITestWindowHeight", "720",
+            ]
+            app.launch()
+            app.activate()
+            XCTAssertTrue(app.buttons["Choose PDF..."].waitForExistence(timeout: 5))
+        }
     }
 
-    override func tearDownWithError() throws {
-        app?.terminate()
-        if let exportDirectory {
-            try? FileManager.default.removeItem(at: exportDirectory)
+    override func tearDown() async throws {
+        await MainActor.run {
+            app?.terminate()
+            if let exportDirectory {
+                try? FileManager.default.removeItem(at: exportDirectory)
+            }
+            exportDirectory = nil
+            if let protectedFixtureDirectory {
+                try? FileManager.default.removeItem(at: protectedFixtureDirectory)
+            }
+            protectedFixtureDirectory = nil
+            if let navigationFixtureDirectory {
+                try? FileManager.default.removeItem(at: navigationFixtureDirectory)
+            }
+            navigationFixtureDirectory = nil
+            app = nil
         }
-        exportDirectory = nil
-        if let protectedFixtureDirectory {
-            try? FileManager.default.removeItem(at: protectedFixtureDirectory)
-        }
-        protectedFixtureDirectory = nil
-        if let navigationFixtureDirectory {
-            try? FileManager.default.removeItem(at: navigationFixtureDirectory)
-        }
-        navigationFixtureDirectory = nil
-        app = nil
     }
 
     func testNativeOpenPanelDirtyCloseGuardShortcutsAndOrganizerLabels() throws {
@@ -96,7 +100,8 @@ final class PDFViewerUITests: XCTestCase {
         app.buttons["Export"].click()
         try chooseSaveDestination(
             directory: directory,
-            fileName: exportFileName
+            fileName: exportFileName,
+            compression: "Compact"
         )
 
         let showInFinder = app.buttons["Show in Finder"]
@@ -264,14 +269,20 @@ final class PDFViewerUITests: XCTestCase {
             assertElement(toolMenu, isContainedIn: window)
             assertElement(styleMenu, isContainedIn: window)
             toolMenu.click()
-            for title in ["Select", "Highlight", "Underline", "Strikethrough", "Freehand", "Text Note"] {
+            for title in [
+                "Select", "Highlight", "Underline", "Strikethrough",
+                "Freehand", "Text Note", "Visual Signature",
+            ] {
                 XCTAssertTrue(app.menuItems[title].exists, "Missing annotation tool: \(title)")
             }
             app.menuItems["Freehand"].click()
             XCTAssertTrue(app.menuButtons["Tool: Freehand"].waitForExistence(timeout: 2))
             assertElement(app.menuButtons["Style"], isContainedIn: window)
         } else {
-            for title in ["Select", "Highlight", "Underline", "Strikethrough", "Freehand", "Text Note"] {
+            for title in [
+                "Select", "Highlight", "Underline", "Strikethrough",
+                "Freehand", "Text Note", "Visual Signature",
+            ] {
                 assertElement(app.radioButtons[title], isContainedIn: window)
             }
             assertElement(app.menuButtons["Color: Black"], isContainedIn: window)
@@ -408,9 +419,25 @@ final class PDFViewerUITests: XCTestCase {
         return radioButton.exists ? radioButton : app.buttons[name]
     }
 
-    private func chooseSaveDestination(directory: URL, fileName: String) throws {
+    private func chooseSaveDestination(
+        directory: URL,
+        fileName: String,
+        compression: String = "Standard"
+    ) throws {
         let savePanel = app.windows["Export PDF"]
         XCTAssertTrue(savePanel.waitForExistence(timeout: 3))
+
+        let compressionPicker = savePanel.popUpButtons["Export file size profile"]
+        XCTAssertTrue(compressionPicker.waitForExistence(timeout: 2))
+        XCTAssertEqual(compressionPicker.value as? String, "Standard")
+        if compression != "Standard" {
+            compressionPicker.click()
+            let profile = app.menuItems[compression]
+            XCTAssertTrue(profile.waitForExistence(timeout: 2))
+            profile.click()
+            XCTAssertEqual(compressionPicker.value as? String, compression)
+        }
+
         try enterPathInNativePanel(directory.path)
 
         let nameField = savePanel.textFields.firstMatch

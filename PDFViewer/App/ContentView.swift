@@ -29,8 +29,14 @@ struct ContentView: View {
                     .padding(16)
                     .transition(.move(edge: .top).combined(with: .opacity))
             }
+
+            if appState.isLoadingDocument {
+                DocumentLoadingOverlay()
+                    .transition(.opacity)
+            }
         }
         .animation(.easeInOut(duration: 0.2), value: appState.exportReceipt)
+        .animation(.easeInOut(duration: 0.15), value: appState.isLoadingDocument)
         .frame(minWidth: 720, minHeight: 520)
         .background(
             WindowCloseGuard(
@@ -44,6 +50,13 @@ struct ContentView: View {
             allowsMultipleSelection: false
         ) { result in
             appState.handleFileImport(result)
+        }
+        .fileImporter(
+            isPresented: $appState.isImageImporterPresented,
+            allowedContentTypes: [.image],
+            allowsMultipleSelection: true
+        ) { result in
+            appState.handleImageImport(result)
         }
         .onOpenURL { url in
             appState.requestOpenDocument(at: url)
@@ -68,6 +81,24 @@ struct ContentView: View {
         }
         .sheet(item: $appState.pendingTextNote) { pendingTextNote in
             TextNoteEditorSheet(pendingTextNote: pendingTextNote)
+        }
+        .sheet(isPresented: $appState.isSignatureLibraryPresented) {
+            VisualSignatureLibrarySheet()
+        }
+        .sheet(isPresented: $appState.isFormEditorPresented) {
+            if let editor = appState.session?.editor {
+                PDFFormEditorSheet(editor: editor)
+            }
+        }
+        .sheet(isPresented: $appState.isLocalProcessingPresented) {
+            if let editor = appState.session?.editor {
+                PDFOCRSheet(editor: editor)
+            }
+        }
+        .sheet(isPresented: $appState.isConversionPresented) {
+            if let editor = appState.session?.editor {
+                PDFConversionSheet(editor: editor)
+            }
         }
         .sheet(item: $appState.pendingBookmarkRename) { pendingBookmarkRename in
             BookmarkRenameSheet(pendingBookmarkRename: pendingBookmarkRename)
@@ -139,6 +170,32 @@ struct ContentView: View {
                 "The output will remain password protected. The password used to unlock this session will grant both user and owner access to the exported PDF. PDFViewer cannot reproduce the original owner password or preserve separate owner and user credentials."
             )
         }
+        .alert(
+            "Permanently Redact Selected Content?",
+            isPresented: Binding(
+                get: { appState.pendingPermanentRedaction != nil },
+                set: { isPresented in
+                    if !isPresented, appState.pendingPermanentRedaction != nil {
+                        appState.cancelPermanentRedaction()
+                    }
+                }
+            ),
+            presenting: appState.pendingPermanentRedaction
+        ) { pending in
+            Button(
+                "Apply \(pending.regionCount) Permanent \(pending.regionCount == 1 ? "Redaction" : "Redactions")",
+                role: .destructive
+            ) {
+                appState.confirmPermanentRedaction()
+            }
+            Button("Cancel", role: .cancel) {
+                appState.cancelPermanentRedaction()
+            }
+        } message: { pending in
+            Text(
+                "This will rasterize \(pending.pageCount) affected \(pending.pageCount == 1 ? "page" : "pages"), remove searchable text and interactive annotations from those pages, and clear document metadata. You can undo in this working session before export, but exported redactions cannot be reversed."
+            )
+        }
         .confirmationDialog(
             "Delete selected pages?",
             isPresented: $appState.isPageDeletionConfirmationPresented,
@@ -165,6 +222,34 @@ struct ContentView: View {
                 }
             }
         }
+    }
+}
+
+private struct DocumentLoadingOverlay: View {
+    @EnvironmentObject private var appState: AppState
+
+    var body: some View {
+        VStack(spacing: 14) {
+            ProgressView()
+                .controlSize(.large)
+            Text("Preparing PDF…")
+                .font(.headline)
+            Text("Creating a safe local working copy")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+            Button("Cancel") {
+                appState.cancelDocumentOpen()
+            }
+            .keyboardShortcut(.cancelAction)
+        }
+        .padding(.horizontal, 28)
+        .padding(.vertical, 22)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+        .shadow(radius: 18, y: 8)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color.black.opacity(0.12))
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Preparing PDF")
     }
 }
 
@@ -352,7 +437,7 @@ private struct ExportSuccessBanner: View {
                 .truncationMode(.middle)
                 .help(title)
                 .accessibilityLabel(title)
-            Text("\(receipt.pageCount) \(receipt.pageCount == 1 ? "page" : "pages")")
+            Text(receiptDetail)
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -382,7 +467,23 @@ private struct ExportSuccessBanner: View {
             "Exported \(receipt.displayName)"
         case .extractedPages:
             "Extracted \(receipt.pageCount) \(receipt.pageCount == 1 ? "page" : "pages") to \(receipt.displayName)"
+        case .flattenedForm:
+            "Exported flattened form \(receipt.displayName)"
+        case .createdFromImages:
+            "Created \(receipt.displayName) from \(receipt.pageCount) \(receipt.pageCount == 1 ? "image" : "images")"
+        case .convertedImages:
+            "Exported \(receipt.pageCount) page \(receipt.pageCount == 1 ? "image" : "images")"
+        case .convertedText:
+            "Exported text from \(receipt.pageCount) \(receipt.pageCount == 1 ? "page" : "pages")"
         }
+    }
+
+    private var receiptDetail: String {
+        let pages = "\(receipt.pageCount) \(receipt.pageCount == 1 ? "page" : "pages")"
+        guard let formattedFileSize = receipt.formattedFileSize else {
+            return pages
+        }
+        return "\(pages) · \(formattedFileSize)"
     }
 }
 
@@ -532,6 +633,7 @@ private final class WindowAttachmentView: NSView {
 
 private struct WelcomeView: View {
     @EnvironmentObject private var appState: AppState
+    @Environment(\.openWindow) private var openWindow
     @ObservedObject var recentDocuments: RecentDocumentsStore
 
     var body: some View {
@@ -549,32 +651,58 @@ private struct WelcomeView: View {
                     .keyboardShortcut(.defaultAction)
                 }
 
+                Button("Create PDF From Images…") {
+                    appState.chooseImagesForPDFCreation()
+                }
+                .accessibilityLabel("Create PDF From Images")
+
                 if !recentDocuments.documents.isEmpty {
                     VStack(alignment: .leading, spacing: 8) {
                         Text("Recent Documents")
                             .font(.headline)
 
                         ForEach(recentDocuments.documents) { document in
-                            Button {
-                                appState.openRecentDocument(document)
-                            } label: {
-                                HStack(spacing: 10) {
-                                    Image(systemName: "doc")
-                                        .foregroundStyle(.secondary)
-                                    Text(document.displayName)
-                                        .lineLimit(1)
-                                        .truncationMode(.middle)
-                                        .help(document.displayName)
-                                    Spacer(minLength: 20)
-                                    Text(document.lastOpenedAt, style: .relative)
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
+                            HStack(spacing: 8) {
+                                Button {
+                                    appState.openRecentDocument(document)
+                                } label: {
+                                    HStack(spacing: 10) {
+                                        Image(systemName: "doc")
+                                            .foregroundStyle(.secondary)
+                                        Text(document.displayName)
+                                            .lineLimit(1)
+                                            .truncationMode(.middle)
+                                            .help(document.displayName)
+                                        Spacer(minLength: 20)
+                                        Text(document.lastOpenedAt, style: .relative)
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    .contentShape(Rectangle())
                                 }
-                                .contentShape(Rectangle())
+                                .buttonStyle(.plain)
+                                .accessibilityLabel("Open recent document \(document.displayName)")
+
+                                Button {
+                                    guard let url = appState.resolveRecentDocumentURL(document) else {
+                                        return
+                                    }
+                                    openWindow(value: WindowLaunchRequest(url: url))
+                                } label: {
+                                    Image(systemName: "doc")
+                                        .overlay(alignment: .topTrailing) {
+                                            Image(systemName: "plus.circle.fill")
+                                                .font(.system(size: 8))
+                                                .offset(x: 4, y: -4)
+                                        }
+                                }
+                                .buttonStyle(.borderless)
+                                .help("Open in New Window")
+                                .accessibilityLabel(
+                                    "Open \(document.displayName) in a new window"
+                                )
                             }
-                            .buttonStyle(.plain)
                             .padding(.vertical, 5)
-                            .accessibilityLabel("Open recent document \(document.displayName)")
                         }
                     }
                     .padding(16)
@@ -646,6 +774,246 @@ private struct BookmarkRenameSheet: View {
     }
 }
 
+private struct VisualSignatureLibrarySheet: View {
+    @EnvironmentObject private var appState: AppState
+    @State private var isImageImporterPresented = false
+    @State private var isDrawingPresented = false
+
+    private let columns = [
+        GridItem(.adaptive(minimum: 180, maximum: 240), spacing: 12),
+    ]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 5) {
+                Text("Visual Signatures")
+                    .font(.title2.weight(.semibold))
+                Text(
+                    "Choose a locally stored signature image to place on the PDF. This is a visual mark only—not a cryptographic or identity-verified signature."
+                )
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if appState.signatureLibrary.signatures.isEmpty {
+                ContentUnavailableView(
+                    "No Visual Signatures",
+                    systemImage: "signature",
+                    description: Text("Draw one or import a PNG or JPEG. Signatures stay in Application Support on this Mac.")
+                )
+                .frame(maxWidth: .infinity, minHeight: 220)
+            } else {
+                ScrollView {
+                    LazyVGrid(columns: columns, alignment: .leading, spacing: 12) {
+                        ForEach(appState.signatureLibrary.signatures) { signature in
+                            signatureCard(signature)
+                        }
+                    }
+                    .padding(.vertical, 2)
+                }
+                .frame(minHeight: 220)
+            }
+
+            Divider()
+
+            ViewThatFits(in: .horizontal) {
+                HStack {
+                    creationButtons
+                    Spacer()
+                    cancelButton
+                }
+                VStack(alignment: .leading, spacing: 10) {
+                    creationButtons
+                    HStack {
+                        Spacer()
+                        cancelButton
+                    }
+                }
+            }
+        }
+        .padding(20)
+        .frame(minWidth: 560, idealWidth: 720, minHeight: 440, idealHeight: 560)
+        .interactiveDismissDisabled()
+        .fileImporter(
+            isPresented: $isImageImporterPresented,
+            allowedContentTypes: [.png, .jpeg],
+            allowsMultipleSelection: false
+        ) { result in
+            guard case .success(let urls) = result, let url = urls.first else {
+                return
+            }
+            appState.importVisualSignature(at: url)
+        }
+        .sheet(isPresented: $isDrawingPresented) {
+            SignatureDrawingSheet()
+        }
+    }
+
+    @ViewBuilder
+    private func signatureCard(_ signature: StoredSignature) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Group {
+                if
+                    let data = try? appState.signatureLibrary.imageData(for: signature.id),
+                    let image = NSImage(data: data)
+                {
+                    Image(nsImage: image)
+                        .resizable()
+                        .scaledToFit()
+                        .padding(8)
+                } else {
+                    Image(systemName: "exclamationmark.triangle")
+                        .font(.title)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .frame(maxWidth: .infinity, minHeight: 86, maxHeight: 110)
+            .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
+            .accessibilityLabel("Preview of \(signature.displayName)")
+
+            Text(signature.displayName)
+                .font(.headline)
+                .lineLimit(2)
+
+            HStack {
+                Button("Use") {
+                    appState.chooseVisualSignature(signature)
+                }
+                .buttonStyle(.borderedProminent)
+
+                Spacer()
+
+                Button("Delete", role: .destructive) {
+                    appState.deleteVisualSignature(signature)
+                }
+            }
+        }
+        .padding(12)
+        .background(.background, in: RoundedRectangle(cornerRadius: 10))
+        .overlay {
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(Color(nsColor: .separatorColor), lineWidth: 1)
+        }
+    }
+
+    private var creationButtons: some View {
+        HStack {
+            Button("Draw Signature…") {
+                isDrawingPresented = true
+            }
+            Button("Import Image…") {
+                isImageImporterPresented = true
+            }
+        }
+    }
+
+    private var cancelButton: some View {
+        Button("Cancel") {
+            appState.dismissVisualSignatureLibrary()
+        }
+        .keyboardShortcut(.cancelAction)
+    }
+}
+
+private struct SignatureDrawingSheet: View {
+    @EnvironmentObject private var appState: AppState
+    @Environment(\.dismiss) private var dismiss
+    @State private var name = "Visual Signature"
+    @State private var strokes: [[CGPoint]] = []
+    @State private var currentStroke: [CGPoint] = []
+
+    private let canvasSize = CGSize(width: 480, height: 180)
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Draw Visual Signature")
+                .font(.title2.weight(.semibold))
+            Text("Draw with the mouse or trackpad. The result is stored only on this Mac and is not a cryptographic signature.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            TextField("Signature name", text: $name)
+                .textFieldStyle(.roundedBorder)
+
+            Canvas { context, _ in
+                for points in strokes + [currentStroke] where points.count >= 2 {
+                    var path = Path()
+                    path.move(to: points[0])
+                    for point in points.dropFirst() {
+                        path.addLine(to: point)
+                    }
+                    context.stroke(
+                        path,
+                        with: .color(.primary),
+                        style: StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round)
+                    )
+                }
+            }
+            .frame(width: canvasSize.width, height: canvasSize.height)
+            .background(.white)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .overlay {
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(Color(nsColor: .separatorColor), lineWidth: 1)
+            }
+            .gesture(signatureDragGesture)
+            .accessibilityLabel("Signature drawing area")
+
+            HStack {
+                Button("Clear") {
+                    strokes = []
+                    currentStroke = []
+                }
+                .disabled(strokes.isEmpty && currentStroke.isEmpty)
+
+                Spacer()
+
+                Button("Cancel") {
+                    dismiss()
+                }
+                Button("Add Signature") {
+                    let inkStrokes = strokes.map {
+                        InkStroke(pageIndex: 0, points: $0)
+                    }
+                    appState.createVisualSignature(
+                        strokes: inkStrokes,
+                        canvasSize: canvasSize,
+                        displayName: name
+                    )
+                    dismiss()
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(strokes.allSatisfy { $0.count < 2 })
+            }
+        }
+        .padding(20)
+        .frame(minWidth: 540)
+    }
+
+    private var signatureDragGesture: some Gesture {
+        DragGesture(minimumDistance: 0)
+            .onChanged { value in
+                let point = CGPoint(
+                    x: min(max(0, value.location.x), canvasSize.width),
+                    y: min(max(0, value.location.y), canvasSize.height)
+                )
+                if let last = currentStroke.last,
+                   hypot(point.x - last.x, point.y - last.y) < 2 {
+                    return
+                }
+                currentStroke.append(point)
+            }
+            .onEnded { _ in
+                if currentStroke.count >= 2 {
+                    strokes.append(currentStroke)
+                }
+                currentStroke = []
+            }
+    }
+}
+
 private struct AnnotationToolSymbol: View {
     let tool: AnnotationTool
 
@@ -713,17 +1081,25 @@ private struct ReaderWorkspace: View {
             resolvedBookmarks: appState.resolvedBookmarks,
             availablePageIDs: Set(editor.pageIDs),
             zoomRequest: state.zoomRequest,
+            printRequestSequence: state.printRequestSequence,
             highlightedSelections: search.matches,
             activeSearchSelection: search.activeSelection,
             searchNavigationRevision: search.navigationRevision,
             annotationTool: annotations.isActive ? annotations.selectedTool : nil,
             selectedAnnotation: annotations.selectedAnnotation,
             clearAnnotationSelectionRevision: annotations.clearSelectionRevision,
+            isRedactionModeActive: appState.redactionState.isActive,
+            redactionRegions: appState.redactionState.regions,
             onTextMarkupRegionsChanged: appState.updateTextMarkupRegions,
             onTextSelectionCommitted: appState.commitSelectedTextMarkup,
             onInkStroke: appState.addInkStroke,
             onTextNotePlacement: appState.requestTextNote,
+            onShapeAnnotation: appState.addShapeAnnotation,
+            onBuiltInStampPlacement: appState.requestBuiltInStamp,
+            onVisualSignaturePlacement: appState.requestVisualSignature,
             onAnnotationSelection: appState.selectAnnotation,
+            onAnnotationMove: appState.moveAnnotation,
+            onRedactionRegion: appState.addRedactionRegion,
             onSidebarTabChange: { state.selectedSidebarTab = $0 },
             onThumbnailNavigation: appState.navigateFromThumbnail,
             onOutlineNavigation: appState.navigateToOutlinePage,
@@ -740,6 +1116,9 @@ private struct ReaderWorkspace: View {
             adaptiveReaderControls
             if annotations.isActive {
                 adaptiveAnnotationControls
+            }
+            if appState.redactionState.isActive {
+                redactionControls
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -788,6 +1167,7 @@ private struct ReaderWorkspace: View {
             openDocumentButton
             organizeButton
             annotateButton
+            documentToolsMenu
             exportButton
             documentFilename
             closeDocumentButton
@@ -881,6 +1261,183 @@ private struct ReaderWorkspace: View {
         )
     }
 
+    private var formButton: some View {
+        Button {
+            appState.presentFormEditor()
+        } label: {
+            Label("Fill Form", systemImage: "list.bullet.rectangle")
+        }
+        .fixedSize()
+        .disabled(!appState.canFillFormsInActiveDocument)
+        .help(
+            appState.canFillFormsInActiveDocument
+                ? "Fill and validate interactive PDF form fields"
+                : "This PDF has no writable form fields."
+        )
+        .accessibilityLabel("Fill PDF Form")
+    }
+
+    private var documentToolsMenu: some View {
+        Menu {
+            Button {
+                appState.presentFormEditor()
+            } label: {
+                Label("Fill Form", systemImage: "list.bullet.rectangle")
+            }
+            .disabled(!appState.canFillFormsInActiveDocument)
+
+            Button {
+                appState.toggleRedactionMode()
+            } label: {
+                Label(
+                    appState.redactionState.isActive ? "Done Selecting Redactions" : "Permanent Redaction…",
+                    systemImage: "eye.slash"
+                )
+            }
+            .disabled(!appState.redactionState.isActive && !appState.canRedactActiveDocument)
+
+            Button {
+                appState.presentLocalProcessing()
+            } label: {
+                Label("OCR & Scan Enhancement…", systemImage: "doc.text.viewfinder")
+            }
+            .disabled(!appState.canProcessActiveDocument)
+
+            Button {
+                appState.presentConversion()
+            } label: {
+                Label("Local Conversion…", systemImage: "arrow.triangle.2.circlepath.doc.on.clipboard")
+            }
+            .disabled(!appState.canConvertActiveDocument)
+        } label: {
+            Label("Tools", systemImage: "wrench.and.screwdriver")
+        }
+        .fixedSize()
+        .help("Forms, permanent redaction, local OCR, scan enhancement, and conversion")
+        .accessibilityLabel("Document Tools")
+    }
+
+    private var redactionButton: some View {
+        Button {
+            appState.toggleRedactionMode()
+        } label: {
+            Label(
+                appState.redactionState.isActive ? "Done Redacting" : "Redact",
+                systemImage: appState.redactionState.isActive
+                    ? "eye.slash.circle.fill"
+                    : "eye.slash"
+            )
+        }
+        .fixedSize()
+        .disabled(!appState.redactionState.isActive && !appState.canRedactActiveDocument)
+        .help(
+            appState.canRedactActiveDocument
+                ? "Draw areas to remove permanently after confirmation"
+                : "The PDF's permissions do not allow content changes."
+        )
+        .accessibilityLabel(
+            appState.redactionState.isActive ? "Done Selecting Redactions" : "Redact PDF"
+        )
+    }
+
+    private var localProcessingButton: some View {
+        Button {
+            appState.presentLocalProcessing()
+        } label: {
+            Label("OCR", systemImage: "doc.text.viewfinder")
+        }
+        .fixedSize()
+        .disabled(!appState.canProcessActiveDocument)
+        .help(
+            appState.canProcessActiveDocument
+                ? "Run local OCR or enhance selected scanned pages"
+                : "The PDF's permissions do not allow replacing processed pages."
+        )
+        .accessibilityLabel("OCR and Scan Enhancement")
+    }
+
+    private var conversionButton: some View {
+        Button {
+            appState.presentConversion()
+        } label: {
+            Label("Convert", systemImage: "arrow.triangle.2.circlepath.doc.on.clipboard")
+        }
+        .fixedSize()
+        .disabled(!appState.canConvertActiveDocument)
+        .help(
+            appState.canConvertActiveDocument
+                ? "Convert PDF pages to images or text, or create a PDF from images"
+                : "The PDF's permissions do not allow copying content for conversion."
+        )
+        .accessibilityLabel("Local PDF Conversion")
+    }
+
+    private var redactionControls: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 10) {
+                Label("Draw rectangles over content to remove", systemImage: "viewfinder.rectangular")
+                    .font(.callout.weight(.semibold))
+                Text(redactionCountDescription)
+                    .foregroundStyle(.secondary)
+                redactionReasonField
+                redactionActionButtons
+            }
+            VStack(alignment: .leading, spacing: 6) {
+                Label("Draw rectangles over content to remove", systemImage: "viewfinder.rectangular")
+                    .font(.callout.weight(.semibold))
+                redactionReasonField
+                redactionActionButtons
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var redactionActionButtons: some View {
+        HStack(spacing: 8) {
+            Button("Undo Area") {
+                appState.removeLastRedactionRegion()
+            }
+            .disabled(appState.redactionState.regions.isEmpty)
+
+            Button("Clear Areas") {
+                appState.clearRedactionRegions()
+            }
+            .disabled(appState.redactionState.regions.isEmpty)
+
+            Button("Apply Permanently…", role: .destructive) {
+                appState.requestApplyPermanentRedactions()
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(.red)
+            .disabled(appState.redactionState.regions.isEmpty)
+
+            Button("Cancel") {
+                appState.toggleRedactionMode()
+            }
+        }
+        .fixedSize()
+    }
+
+    private var redactionCountDescription: String {
+        let count = appState.redactionState.regions.count
+        return "\(count) \(count == 1 ? "area" : "areas") selected"
+    }
+
+    private var redactionReasonField: some View {
+        TextField("Reason label (optional)", text: redactionReasonBinding)
+            .textFieldStyle(.roundedBorder)
+            .frame(width: 190)
+            .help("Burn this label visibly into every redaction area")
+            .accessibilityLabel("Optional redaction reason label")
+    }
+
+    private var redactionReasonBinding: Binding<String> {
+        Binding(
+            get: { appState.redactionState.reasonLabel },
+            set: { appState.redactionState.updateReasonLabel($0) }
+        )
+    }
+
     private var adaptiveAnnotationControls: some View {
         ViewThatFits(in: .horizontal) {
             regularAnnotationControls
@@ -896,10 +1453,22 @@ private struct ReaderWorkspace: View {
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
             annotationToolPicker
-            annotationColorMenu
+            if annotations.selectedTool != .signature &&
+                annotations.selectedAnnotation?.kind != .signature {
+                annotationColorMenu
+            }
             if annotations.selectedTool == .freehand ||
-                annotations.selectedAnnotation?.kind == .freehand {
+                annotations.selectedTool.shapeKind != nil ||
+                annotations.selectedAnnotation?.kind == .freehand ||
+                annotations.selectedAnnotation?.kind?.shapeKind != nil {
                 annotationLineWidthPicker
+            }
+            if annotations.selectedTool == .stamp {
+                annotationStampPicker
+            }
+            if annotations.selectedTool == .signature ||
+                annotations.selectedAnnotation?.kind == .signature {
+                annotationSignatureSizePicker
             }
             selectedAnnotationActions
             finishAnnotatingButton
@@ -978,20 +1547,46 @@ private struct ReaderWorkspace: View {
 
     private var annotationStyleMenu: some View {
         Menu {
-            Menu("Color") {
-                ForEach(AnnotationPaletteColor.allCases) { color in
-                    Button(color.title) {
-                        appState.setAnnotationColor(color)
+            if annotations.selectedTool != .signature &&
+                annotations.selectedAnnotation?.kind != .signature {
+                Menu("Color") {
+                    ForEach(AnnotationPaletteColor.allCases) { color in
+                        Button(color.title) {
+                            appState.setAnnotationColor(color)
+                        }
                     }
                 }
             }
 
             if annotations.selectedTool == .freehand ||
-                annotations.selectedAnnotation?.kind == .freehand {
+                annotations.selectedTool.shapeKind != nil ||
+                annotations.selectedAnnotation?.kind == .freehand ||
+                annotations.selectedAnnotation?.kind?.shapeKind != nil {
                 Menu("Ink Width") {
                     ForEach(AnnotationLineWidth.allCases) { lineWidth in
                         Button(lineWidth.title) {
                             appState.setAnnotationLineWidth(lineWidth)
+                        }
+                    }
+                }
+            }
+
+            if annotations.selectedTool == .stamp {
+                Menu("Stamp") {
+                    ForEach(StampPreset.allCases) { preset in
+                        Button(preset.title) {
+                            appState.setStampPreset(preset)
+                        }
+                    }
+                }
+            }
+
+            if annotations.selectedTool == .signature ||
+                annotations.selectedAnnotation?.kind == .signature {
+                Menu("Visual Signature Size") {
+                    ForEach(SignatureSizePreset.allCases) { size in
+                        Button(size.title) {
+                            appState.setVisualSignatureSize(size)
                         }
                     }
                 }
@@ -1008,6 +1603,32 @@ private struct ReaderWorkspace: View {
             if selection.kind == .textNote, selection.isOwnedByPDFViewer {
                 Button("Edit Note") {
                     appState.requestEditSelectedTextNote()
+                }
+                .fixedSize()
+            }
+
+            if selection.supportsControlledResize {
+                Button("Smaller") {
+                    appState.resizeSelectedAnnotation(scale: 0.8)
+                }
+                .help("Make the selected annotation smaller")
+                .fixedSize()
+
+                Button("Larger") {
+                    appState.resizeSelectedAnnotation(scale: 1.25)
+                }
+                .help("Make the selected annotation larger")
+                .fixedSize()
+            }
+
+            if selection.kind == .signature, selection.isOwnedByPDFViewer {
+                Button("Rotate Left") {
+                    appState.rotateSelectedVisualSignature(clockwise: false)
+                }
+                .fixedSize()
+
+                Button("Rotate Right") {
+                    appState.rotateSelectedVisualSignature(clockwise: true)
                 }
                 .fixedSize()
             }
@@ -1039,6 +1660,40 @@ private struct ReaderWorkspace: View {
         Binding(
             get: { annotations.selectedLineWidth },
             set: { appState.setAnnotationLineWidth($0) }
+        )
+    }
+
+    private var annotationSignatureSizePicker: some View {
+        Picker("Visual Signature Size", selection: annotationSignatureSizeBinding) {
+            ForEach(SignatureSizePreset.allCases) { size in
+                Text(size.title).tag(size)
+            }
+        }
+        .pickerStyle(.segmented)
+        .fixedSize(horizontal: true, vertical: false)
+    }
+
+    private var annotationStampPicker: some View {
+        Picker("Stamp", selection: annotationStampBinding) {
+            ForEach(StampPreset.allCases) { preset in
+                Text(preset.title).tag(preset)
+            }
+        }
+        .pickerStyle(.menu)
+        .fixedSize(horizontal: true, vertical: false)
+    }
+
+    private var annotationStampBinding: Binding<StampPreset> {
+        Binding(
+            get: { annotations.selectedStamp },
+            set: { appState.setStampPreset($0) }
+        )
+    }
+
+    private var annotationSignatureSizeBinding: Binding<SignatureSizePreset> {
+        Binding(
+            get: { annotations.selectedSignatureSize },
+            set: { appState.setVisualSignatureSize($0) }
         )
     }
 
@@ -1807,7 +2462,7 @@ private struct OrganizerPageDragPayload: Codable, Transferable {
 
 private extension UTType {
     static let pdfViewerOrganizerPageSelection = UTType(
-        exportedAs: "com.example.PDFViewer.organizer-page-selection"
+        exportedAs: "com.christopherrego.PDFViewer.organizer-page-selection"
     )
 }
 
@@ -2027,6 +2682,8 @@ private extension ReaderTheme {
             Color(red: 0.82, green: 0.82, blue: 0.82)
         case .night:
             Color(red: 0.055, green: 0.055, blue: 0.06)
+        case .sepia:
+            Color(red: 0.70, green: 0.63, blue: 0.49)
         }
     }
 }

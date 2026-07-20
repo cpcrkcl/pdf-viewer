@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import PDFKit
 import XCTest
@@ -5,7 +6,7 @@ import XCTest
 
 @MainActor
 final class AppStateLifecycleTests: XCTestCase {
-    private var temporaryDirectory: URL!
+    nonisolated(unsafe) private var temporaryDirectory: URL!
 
     override func setUpWithError() throws {
         temporaryDirectory = FileManager.default.temporaryDirectory
@@ -19,6 +20,22 @@ final class AppStateLifecycleTests: XCTestCase {
     override func tearDownWithError() throws {
         try? FileManager.default.removeItem(at: temporaryDirectory)
         temporaryDirectory = nil
+    }
+
+    func testProductionOpenPathPublishesLoadingThenActivatesDocument() async throws {
+        let sourceURL = try writePDF(
+            named: "async-source.pdf",
+            pages: (0..<40).map { "Page \($0 + 1)" }
+        )
+        let appState = makeAppState(loadDocumentsAsynchronously: true)
+
+        appState.requestOpenDocument(at: sourceURL)
+
+        XCTAssertTrue(appState.isLoadingDocument)
+        try await waitUntil { appState.session != nil || appState.presentedError != nil }
+        XCTAssertNil(appState.presentedError)
+        XCTAssertEqual(appState.session?.document.pageCount, 40)
+        XCTAssertFalse(appState.isLoadingDocument)
     }
 
     func testCleanCloseDoesNotPrompt() throws {
@@ -328,6 +345,53 @@ final class AppStateLifecycleTests: XCTestCase {
         XCTAssertEqual(editor.textNoteContents(pageIndex: 0, identifier: identifier), "Updated note")
     }
 
+    func testShapeStampMoveAndResizeFlowThroughAppState() throws {
+        let sourceURL = try writePDF(named: "source.pdf", pages: ["Alpha"])
+        let appState = makeAppState()
+        appState.requestOpenDocument(at: sourceURL)
+        appState.toggleAnnotationMode()
+        appState.selectAnnotationTool(.rectangle)
+
+        appState.addShapeAnnotation(
+            ShapeAnnotationPlacement(
+                pageIndex: 0,
+                startPoint: CGPoint(x: 100, y: 100),
+                endPoint: CGPoint(x: 220, y: 180)
+            )
+        )
+
+        let editor = try XCTUnwrap(appState.session?.editor)
+        let selection = try XCTUnwrap(appState.annotationState.selectedAnnotation)
+        XCTAssertEqual(selection.kind, .rectangle)
+        XCTAssertEqual(appState.annotationState.selectedTool, .select)
+        let initialBounds = try XCTUnwrap(editor.document.page(at: 0)?.annotations.first?.bounds)
+
+        appState.moveAnnotation(selection, by: CGSize(width: 20, height: 10))
+        let movedBounds = try XCTUnwrap(editor.document.page(at: 0)?.annotations.first?.bounds)
+        XCTAssertEqual(movedBounds.minX, initialBounds.minX + 20, accuracy: 0.5)
+        XCTAssertEqual(movedBounds.minY, initialBounds.minY + 10, accuracy: 0.5)
+
+        appState.resizeSelectedAnnotation(scale: 1.25)
+        XCTAssertGreaterThan(
+            try XCTUnwrap(editor.document.page(at: 0)?.annotations.first?.bounds.width),
+            movedBounds.width
+        )
+
+        appState.setStampPreset(.confidential)
+        appState.selectAnnotationTool(.stamp)
+        appState.requestBuiltInStamp(
+            at: AnnotationPlacement(pageIndex: 0, point: CGPoint(x: 300, y: 300))
+        )
+        let stamp = try XCTUnwrap(editor.document.page(at: 0)?.annotations.last)
+        XCTAssertEqual(stamp.type, PDFAnnotationSubtype.stamp.pdfTypeName)
+        XCTAssertEqual(
+            stamp.stampName?.trimmingCharacters(in: CharacterSet(charactersIn: "/")),
+            StampPreset.confidential.pdfName
+        )
+        XCTAssertEqual(appState.annotationState.selectedAnnotation?.kind, .stamp)
+        XCTAssertTrue(appState.readerState.isDocumentDirty)
+    }
+
     func testPasswordRetryAndCancelPreserveCurrentReplacementSession() throws {
         let currentURL = try writePDF(named: "current.pdf", pages: ["Current"])
         let protectedURL = temporaryDirectory.appendingPathComponent("protected.pdf")
@@ -388,6 +452,10 @@ final class AppStateLifecycleTests: XCTestCase {
         XCTAssertEqual(appState.presentedError?.title, "Page Changes Not Permitted")
 
         appState.toggleAnnotationMode()
+        appState.selectAnnotationTool(.signature)
+        XCTAssertTrue(appState.isSignatureLibraryPresented)
+        appState.dismissVisualSignatureLibrary()
+        XCTAssertEqual(appState.annotationState.selectedTool, .select)
         appState.requestTextNote(at: AnnotationPlacement(pageIndex: 0, point: CGPoint(x: 100, y: 100)))
         appState.submitPendingTextNote(contents: "Allowed comment")
         XCTAssertTrue(editor.hasUnexportedChanges)
@@ -423,6 +491,155 @@ final class AppStateLifecycleTests: XCTestCase {
         XCTAssertEqual(exporter.lastSessionPassword, "fixture-user")
         XCTAssertEqual(exporter.lastAccessPermissions, session.securityContext.accessPermissions)
         XCTAssertFalse(session.editor.hasUnexportedChanges)
+    }
+
+    func testFormWorkflowFillsResetsAndTracksProtectedRevisions() throws {
+        let sourceURL = try writeFormPDF(named: "form.pdf")
+        let appState = makeAppState()
+        appState.requestOpenDocument(at: sourceURL)
+        let editor = try XCTUnwrap(appState.session?.editor)
+
+        XCTAssertTrue(appState.canFillFormsInActiveDocument)
+        appState.presentFormEditor()
+        XCTAssertTrue(appState.isFormEditorPresented)
+
+        appState.updateFormField(named: "fullName", value: .text("Ada"))
+        appState.updateFormField(named: "consent", value: .checked(true))
+        XCTAssertEqual(editor.formFields.first { $0.name == "fullName" }?.value, .text("Ada"))
+        XCTAssertEqual(editor.formFields.first { $0.name == "consent" }?.value, .checked(true))
+        XCTAssertTrue(editor.hasUnexportedChanges)
+        XCTAssertTrue(appState.readerState.isDocumentDirty)
+
+        appState.resetFormFields()
+        XCTAssertEqual(
+            editor.formFields.first { $0.name == "fullName" }?.value,
+            .text("Original")
+        )
+        XCTAssertEqual(
+            editor.formFields.first { $0.name == "consent" }?.value,
+            .checked(false)
+        )
+        XCTAssertTrue(editor.canUndo)
+
+        appState.dismissFormEditor()
+        XCTAssertFalse(appState.isFormEditorPresented)
+    }
+
+    func testUserPasswordWithoutFormPermissionBlocksFormChanges() throws {
+        let sourceURL = try writeFormPDF(
+            named: "restricted-form.pdf",
+            password: "fixture-user",
+            permissions: []
+        )
+        let appState = makeAppState()
+        appState.requestOpenDocument(at: sourceURL)
+        appState.submitDocumentPassword("fixture-user")
+        let editor = try XCTUnwrap(appState.session?.editor)
+
+        XCTAssertFalse(appState.canFillFormsInActiveDocument)
+        appState.presentFormEditor()
+        XCTAssertFalse(appState.isFormEditorPresented)
+        XCTAssertEqual(appState.presentedError?.title, "Form Filling Not Permitted")
+
+        appState.updateFormField(named: "fullName", value: .text("Blocked"))
+        XCTAssertEqual(
+            editor.formFields.first { $0.name == "fullName" }?.value,
+            .text("Original")
+        )
+        XCTAssertFalse(editor.canUndo)
+    }
+
+    func testRedactionRequiresExplicitConfirmationAndRemainsUndoableBeforeExport() throws {
+        let sourceURL = try writePDF(named: "redaction.pdf", pages: ["SECRET account 1234"])
+        let appState = makeAppState()
+        appState.requestOpenDocument(at: sourceURL)
+        let editor = try XCTUnwrap(appState.session?.editor)
+        let region = PDFRedactionRegion(
+            pageIndex: 0,
+            bounds: CGRect(x: 60, y: 640, width: 300, height: 70)
+        )
+
+        XCTAssertTrue(appState.canRedactActiveDocument)
+        appState.toggleRedactionMode()
+        XCTAssertTrue(appState.redactionState.isActive)
+        appState.addRedactionRegion(region)
+        appState.redactionState.updateReasonLabel("PERSONAL DATA")
+        appState.requestApplyPermanentRedactions()
+
+        XCTAssertEqual(appState.pendingPermanentRedaction?.regionCount, 1)
+        XCTAssertEqual(appState.pendingPermanentRedaction?.reasonLabel, "PERSONAL DATA")
+        XCTAssertFalse(editor.canUndo)
+        XCTAssertFalse(editor.document.findString("SECRET", withOptions: .caseInsensitive).isEmpty)
+
+        appState.cancelPermanentRedaction()
+        XCTAssertNil(appState.pendingPermanentRedaction)
+        XCTAssertEqual(appState.redactionState.regions, [region])
+
+        appState.requestApplyPermanentRedactions()
+        appState.confirmPermanentRedaction()
+        XCTAssertNil(appState.pendingPermanentRedaction)
+        XCTAssertFalse(appState.redactionState.isActive)
+        XCTAssertTrue(appState.redactionState.regions.isEmpty)
+        XCTAssertTrue(appState.redactionState.reasonLabel.isEmpty)
+        XCTAssertTrue(editor.document.findString("SECRET", withOptions: .caseInsensitive).isEmpty)
+        XCTAssertTrue(editor.hasUnexportedChanges)
+
+        appState.undoPageOperation()
+        XCTAssertEqual(editor.document.findString("SECRET", withOptions: .caseInsensitive).count, 1)
+    }
+
+    func testUserPasswordWithoutDocumentChangePermissionBlocksRedaction() throws {
+        let protectedURL = temporaryDirectory.appendingPathComponent("restricted-redaction.pdf")
+        try FixturePDFBuilder.writePasswordProtectedPDF(to: protectedURL, permissions: [])
+        let appState = makeAppState()
+        appState.requestOpenDocument(at: protectedURL)
+        appState.submitDocumentPassword("fixture-user")
+
+        XCTAssertFalse(appState.canRedactActiveDocument)
+        appState.toggleRedactionMode()
+        XCTAssertFalse(appState.redactionState.isActive)
+        XCTAssertEqual(appState.presentedError?.title, "Redaction Not Permitted")
+    }
+
+    func testLocalOCRWorkflowAppliesOneRevisionAndReportsProgress() async throws {
+        let sourceURL = try writePDF(named: "ocr.pdf", pages: ["LOCAL OCR WORKFLOW 7391"])
+        let appState = makeAppState()
+        appState.requestOpenDocument(at: sourceURL)
+        let editor = try XCTUnwrap(appState.session?.editor)
+
+        appState.presentLocalProcessing()
+        XCTAssertTrue(appState.isLocalProcessingPresented)
+        appState.startLocalProcessing(
+            pageIndexes: [0],
+            addsSearchableText: true,
+            enhancement: .grayscale
+        )
+
+        for _ in 0..<100 where appState.isLocalProcessing {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+
+        XCTAssertFalse(appState.isLocalProcessing)
+        XCTAssertFalse(appState.isLocalProcessingPresented)
+        XCTAssertTrue(editor.hasUnexportedChanges)
+        XCTAssertTrue(editor.canUndo)
+        XCTAssertTrue(editor.document.page(at: 0)?.string?.contains("7391") == true)
+        XCTAssertEqual(appState.localProcessingProgress, PDFOCRProgress(completedPages: 1, totalPages: 1))
+        XCTAssertEqual(appState.presentedError?.title, "Local Processing Complete")
+    }
+
+    func testLocalProcessingCanBeCancelledWithoutChangingTheDocument() throws {
+        let sourceURL = try writePDF(named: "cancel-ocr.pdf", pages: ["No change"])
+        let appState = makeAppState()
+        appState.requestOpenDocument(at: sourceURL)
+        let editor = try XCTUnwrap(appState.session?.editor)
+
+        appState.presentLocalProcessing()
+        appState.cancelLocalProcessing()
+
+        XCTAssertFalse(appState.isLocalProcessingPresented)
+        XCTAssertFalse(appState.isLocalProcessing)
+        XCTAssertFalse(editor.canUndo)
     }
 
     func testBookmarkTargetsSurviveReorderDeleteAndUndoWithoutDirtyingOnAdd() throws {
@@ -509,7 +726,8 @@ final class AppStateLifecycleTests: XCTestCase {
 
     private func makeAppState(
         exporter: any PDFExporting = RecordingExporter(),
-        bookmarkStore: PageBookmarkStore? = nil
+        bookmarkStore: PageBookmarkStore? = nil,
+        loadDocumentsAsynchronously: Bool = false
     ) -> AppState {
         let effectiveBookmarkStore = bookmarkStore ?? PageBookmarkStore(
             defaults: UserDefaults(
@@ -528,13 +746,92 @@ final class AppStateLifecycleTests: XCTestCase {
                 bookmarkCoder: LifecycleBookmarkCoder()
             ),
             bookmarkStore: effectiveBookmarkStore,
-            pdfExporter: exporter
+            signatureLibrary: SignatureLibrary(
+                storageDirectory: temporaryDirectory.appendingPathComponent(
+                    "Signatures-\(UUID().uuidString)",
+                    isDirectory: true
+                )
+            ),
+            pdfExporter: exporter,
+            loadDocumentsAsynchronously: loadDocumentsAsynchronously
         )
+    }
+
+    private func waitUntil(
+        timeoutIterations: Int = 500,
+        condition: @MainActor () -> Bool
+    ) async throws {
+        for _ in 0..<timeoutIterations {
+            if condition() {
+                return
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTFail("Timed out waiting for the asynchronous document operation.")
     }
 
     private func writePDF(named name: String, pages: [String]) throws -> URL {
         let url = temporaryDirectory.appendingPathComponent(name)
         try FixturePDFBuilder.writeTextPDF(pages: pages, to: url)
+        return url
+    }
+
+    private func writeFormPDF(
+        named name: String,
+        password: String? = nil,
+        permissions: [PDFAccessPermissions] = [.allowsFormFieldEntry]
+    ) throws -> URL {
+        let image = NSImage(size: NSSize(width: 612, height: 792))
+        image.lockFocus()
+        NSColor.white.setFill()
+        NSRect(origin: .zero, size: image.size).fill()
+        image.unlockFocus()
+
+        let document = PDFDocument()
+        let page = try XCTUnwrap(PDFPage(image: image))
+        document.insert(page, at: 0)
+
+        let text = PDFAnnotation(
+            bounds: CGRect(x: 72, y: 650, width: 240, height: 28),
+            forType: .widget,
+            withProperties: nil
+        )
+        text.widgetFieldType = .text
+        text.fieldName = "fullName"
+        text.widgetDefaultStringValue = "Original"
+        text.widgetStringValue = "Original"
+        page.addAnnotation(text)
+
+        let checkbox = PDFAnnotation(
+            bounds: CGRect(x: 72, y: 610, width: 24, height: 24),
+            forType: .widget,
+            withProperties: nil
+        )
+        checkbox.widgetFieldType = .button
+        checkbox.fieldName = "consent"
+        checkbox.widgetControlType = .checkBoxControl
+        checkbox.widgetDefaultStringValue = "Off"
+        checkbox.buttonWidgetState = .offState
+        page.addAnnotation(checkbox)
+
+        let url = temporaryDirectory.appendingPathComponent(name)
+        if let password {
+            let permissionBits = permissions.reduce(UInt(0)) { result, permission in
+                result | permission.rawValue
+            }
+            let options: [PDFDocumentWriteOption: Any] = [
+                .ownerPasswordOption: "fixture-owner",
+                .userPasswordOption: password,
+                .accessPermissionsOption: NSNumber(value: permissionBits),
+            ]
+            guard document.write(to: url, withOptions: options) else {
+                throw LifecycleTestError.couldNotWritePDF
+            }
+        } else {
+            guard document.write(to: url) else {
+                throw LifecycleTestError.couldNotWritePDF
+            }
+        }
         return url
     }
 
@@ -550,6 +847,7 @@ private final class RecordingExporter: PDFExporting {
     private(set) var lastProtection: PDFOutputProtection?
     private(set) var lastSessionPassword: String?
     private(set) var lastAccessPermissions: PDFAccessPermissions?
+    private(set) var lastCompression: PDFExportCompression?
 
     func export(
         document: PDFDocument,
@@ -565,11 +863,13 @@ private final class RecordingExporter: PDFExporting {
         to destinationURL: URL,
         protection: PDFOutputProtection,
         sessionPassword: String?,
-        accessPermissions: PDFAccessPermissions
+        accessPermissions: PDFAccessPermissions,
+        compression: PDFExportCompression
     ) throws -> PDFExportResult {
         lastProtection = protection
         lastSessionPassword = sessionPassword
         lastAccessPermissions = accessPermissions
+        lastCompression = compression
         return PDFExportResult(url: destinationURL, pageCount: document.pageCount)
     }
 }
@@ -617,4 +917,5 @@ private struct LifecycleBookmarkCoder: SecurityScopedBookmarkCoding {
 
 private enum LifecycleTestError: Error {
     case invalidBookmark
+    case couldNotWritePDF
 }

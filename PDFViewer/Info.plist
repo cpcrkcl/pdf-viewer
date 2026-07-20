@@ -57,7 +57,7 @@
 			<key>UTTypeDescription</key>
 			<string>PDFViewer Organizer Page Selection</string>
 			<key>UTTypeIdentifier</key>
-			<string>com.example.PDFViewer.organizer-page-selection</string>
+			<string>com.christopherrego.PDFViewer.organizer-page-selection</string>
 		</dict>
 	</array>
 </dict>

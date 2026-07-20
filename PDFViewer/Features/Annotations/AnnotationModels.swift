@@ -16,6 +16,12 @@ enum AnnotationTool: String, CaseIterable, Identifiable {
     case strikethrough
     case freehand
     case textNote
+    case rectangle
+    case oval
+    case line
+    case arrow
+    case stamp
+    case signature
 
     var id: Self { self }
 
@@ -33,6 +39,18 @@ enum AnnotationTool: String, CaseIterable, Identifiable {
             "Freehand"
         case .textNote:
             "Text Note"
+        case .rectangle:
+            "Rectangle"
+        case .oval:
+            "Oval"
+        case .line:
+            "Line"
+        case .arrow:
+            "Arrow"
+        case .stamp:
+            "Stamp"
+        case .signature:
+            "Visual Signature"
         }
     }
 
@@ -50,6 +68,18 @@ enum AnnotationTool: String, CaseIterable, Identifiable {
             "pencil.tip"
         case .textNote:
             "note.text.badge.plus"
+        case .rectangle:
+            "rectangle"
+        case .oval:
+            "circle"
+        case .line:
+            "line.diagonal"
+        case .arrow:
+            "arrow.up.right"
+        case .stamp:
+            "seal"
+        case .signature:
+            "signature"
         }
     }
 
@@ -57,8 +87,66 @@ enum AnnotationTool: String, CaseIterable, Identifiable {
         switch self {
         case .highlight, .underline, .strikethrough:
             true
-        case .select, .freehand, .textNote:
+        case .select, .freehand, .textNote, .rectangle, .oval, .line, .arrow, .stamp, .signature:
             false
+        }
+    }
+
+    var shapeKind: ShapeAnnotationKind? {
+        switch self {
+        case .rectangle:
+            .rectangle
+        case .oval:
+            .oval
+        case .line:
+            .line
+        case .arrow:
+            .arrow
+        default:
+            nil
+        }
+    }
+}
+
+enum ShapeAnnotationKind: String, CaseIterable, Identifiable {
+    case rectangle
+    case oval
+    case line
+    case arrow
+
+    var id: Self { self }
+}
+
+enum StampPreset: String, CaseIterable, Identifiable {
+    case approved
+    case draft
+    case confidential
+    case final
+    case topSecret
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .approved:
+            "Approved"
+        case .draft:
+            "Draft"
+        case .confidential:
+            "Confidential"
+        case .final:
+            "Final"
+        case .topSecret:
+            "Top Secret"
+        }
+    }
+
+    var pdfName: String {
+        switch self {
+        case .topSecret:
+            "TopSecret"
+        default:
+            title
         }
     }
 }
@@ -166,6 +254,18 @@ struct SelectedAnnotation: Equatable {
     var isOwnedByPDFViewer: Bool {
         identifier != nil
     }
+
+    var supportsControlledResize: Bool {
+        guard isOwnedByPDFViewer else {
+            return false
+        }
+        return switch kind {
+        case .rectangle, .oval, .line, .arrow, .stamp:
+            true
+        default:
+            false
+        }
+    }
 }
 
 struct TextMarkupRegion: Equatable {
@@ -181,6 +281,21 @@ struct InkStroke: Equatable {
 struct AnnotationPlacement: Equatable {
     let pageIndex: Int
     let point: CGPoint
+}
+
+struct ShapeAnnotationPlacement: Equatable {
+    let pageIndex: Int
+    let startPoint: CGPoint
+    let endPoint: CGPoint
+
+    var bounds: CGRect {
+        CGRect(
+            x: min(startPoint.x, endPoint.x),
+            y: min(startPoint.y, endPoint.y),
+            width: abs(endPoint.x - startPoint.x),
+            height: abs(endPoint.y - startPoint.y)
+        )
+    }
 }
 
 struct PendingTextNote: Identifiable, Equatable {
@@ -201,6 +316,9 @@ final class AnnotationState: ObservableObject {
     @Published var selectedTool: AnnotationTool = .select
     @Published var selectedColor: AnnotationPaletteColor = .black
     @Published var selectedLineWidth: AnnotationLineWidth = .standard
+    @Published var selectedStamp: StampPreset = .approved
+    @Published var selectedSignatureSize: SignatureSizePreset = .medium
+    @Published var selectedSignatureID: UUID?
     @Published private(set) var textMarkupRegions: [TextMarkupRegion] = []
     @Published private(set) var selectedAnnotation: SelectedAnnotation?
     @Published private(set) var clearSelectionRevision = 0
@@ -225,6 +343,9 @@ final class AnnotationState: ObservableObject {
         selectedTool = .select
         selectedColor = .black
         selectedLineWidth = .standard
+        selectedStamp = .approved
+        selectedSignatureSize = .medium
+        selectedSignatureID = nil
         clearTransientSelection()
     }
 

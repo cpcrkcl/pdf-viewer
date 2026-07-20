@@ -3,7 +3,7 @@
 **Version:** 1.0  
 **Status:** Implemented product baseline  
 **Scope:** Basic annotations, password-protected PDFs, and reading navigation  
-**Related baseline:** `MVP_SPEC.md`
+**Related baseline:** `MVP_SPEC.md`; later implemented expansion: `FEATURE_SPEC.md`
 
 ## 1. Purpose and boundaries
 
@@ -15,7 +15,7 @@ The post-MVP scope contains three ordered milestones:
 2. Password-protected PDF support.
 3. Document outlines, local bookmarks, and navigation history.
 
-AI document features and inference are permanently excluded. OCR, forms, signatures, redaction, conversion, compression, cloud synchronization, and collaboration remain deferred.
+AI document features and inference are permanently excluded. OCR, forms, redaction, conversion, cloud synchronization, and collaboration remain deferred. Printing, optimized export, and visual signatures were approved later and are specified separately in `FEATURE_SPEC.md`.
 
 ## 2. Approved product decisions
 
@@ -58,7 +58,7 @@ The annotation name is authoritative. PDFViewer also writes a compatible custom 
 
 The committed tools are Select, Highlight, Underline, Strikethrough, Freehand, and Text Note. The curated palette is Yellow, Green, Blue, Pink, Red, and Black. Black is the default selected color; highlight opacity remains 35%, and default ink width is 3 points. Ink widths are Fine (1.5 points), Standard (3 points), and Bold (5 points).
 
-There is no arbitrary color picker, pressure sensitivity, eraser, shape, stamp, move, or resize tool in this milestone. Escape leaves drawing or placement mode. Opening the page organizer ends annotation interaction and clears the annotation selection without discarding revisions.
+There is no arbitrary color picker, pressure sensitivity, eraser, shape, move, or resize tool in this milestone. Visual-signature stamps were approved as a later, narrowly defined feature in `FEATURE_SPEC.md`. Escape leaves drawing or placement mode. Opening the page organizer ends annotation interaction and clears the annotation selection without discarding revisions.
 
 ## 4. Milestone 2 — Password-protected PDFs
 
@@ -138,20 +138,17 @@ At 720×520 and a regular window size, switch among all sidebar tabs, navigate a
 
 Each milestone requires its complete unit and UI suite, Debug build, static analysis, `git diff --check`, code-sign verification, sandbox-entitlement verification, native GUI smoke testing at 720×520, 800×550, 900×600, 1100×720, and full screen, source-hash verification, and representative export/reopen validation. Verification must also confirm that no network, cloud, or AI dependency, call, or entitlement was added.
 
-## 8. Explicit non-goals
+## 8. Explicit non-goals for this historical milestone
 
 - Editing third-party annotations.
-- Annotation shapes, arrows, stamps, erasers, pressure sensitivity, moving, or resizing.
+- Annotation shapes, arrows, erasers, pressure sensitivity, moving, or arbitrary resizing.
 - Flattening or burning annotations into page content.
 - Remembering passwords, Keychain storage, or reproducing original owner passwords.
 - Password-protected secondary imports.
 - Outline editing or embedding page bookmarks in PDFs.
 - Bookmark synchronization.
-- Printing.
-- OCR or scan enhancement.
-- Forms or signatures.
-- Redaction.
-- Conversion or compression.
+- OCR, scan enhancement, AcroForm, permanent redaction, and native conversion were outside this milestone and were implemented later as documented in `RELEASE_STATUS.md`.
+- Cryptographic signatures remain unsupported.
 - Cloud services or collaboration.
 - AI document features or local/remote inference of any kind.
 - Replacing or overwriting source PDFs.

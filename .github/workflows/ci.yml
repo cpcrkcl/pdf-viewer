@@ -1,0 +1,61 @@
+name: macOS CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      run_ui_tests:
+        description: Run macOS UI automation on a GUI-capable runner
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  build-and-test:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: >-
+          xcodebuild
+          -project PDFViewer.xcodeproj
+          -scheme PDFViewer
+          -destination 'platform=macOS'
+          build
+          CODE_SIGNING_ALLOWED=NO
+      - name: Unit tests
+        run: >-
+          xcodebuild
+          -project PDFViewer.xcodeproj
+          -scheme PDFViewer
+          -destination 'platform=macOS'
+          test
+          -only-testing:PDFViewerTests
+          CODE_SIGNING_ALLOWED=NO
+      - name: Static analysis
+        run: >-
+          xcodebuild
+          -project PDFViewer.xcodeproj
+          -scheme PDFViewer
+          -configuration Release
+          -destination 'platform=macOS'
+          analyze
+          CODE_SIGNING_ALLOWED=NO
+      - name: UI tests where automation mode is available
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_ui_tests }}
+        run: >-
+          xcodebuild
+          -project PDFViewer.xcodeproj
+          -scheme PDFViewer
+          -destination 'platform=macOS'
+          test
+          -only-testing:PDFViewerUITests
+          CODE_SIGN_IDENTITY=-
+          CODE_SIGNING_REQUIRED=NO
+          -test-timeouts-enabled YES
+          -default-test-execution-time-allowance 60
+          -maximum-test-execution-time-allowance 120
+      - name: Diff hygiene
+        run: git diff --check

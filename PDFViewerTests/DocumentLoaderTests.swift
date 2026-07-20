@@ -5,6 +5,108 @@ import XCTest
 
 @MainActor
 final class DocumentLoaderTests: XCTestCase {
+    func testAsyncOpenPreparesLargeIndependentWorkingCopyOffMainActor() async throws {
+        let temporaryDirectory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
+        let sourceURL = temporaryDirectory.appendingPathComponent("large-fixture.pdf")
+        try FixturePDFBuilder.writePDF(pageCount: 80, to: sourceURL)
+        let originalData = try Data(contentsOf: sourceURL)
+        var startCount = 0
+        var stopCount = 0
+        let loader = DocumentLoader(
+            securityScopedResources: SecurityScopedResourceAccessProvider(
+                startAccessing: { _ in
+                    startCount += 1
+                    return true
+                },
+                stopAccessing: { _ in stopCount += 1 }
+            )
+        )
+
+        let openTask = Task { try await loader.openAsync(sourceURL) }
+        await Task.yield()
+        let session = try openedSession(from: await openTask.value)
+
+        XCTAssertEqual(session.document.pageCount, 80)
+        XCTAssertEqual(startCount, 1)
+        XCTAssertEqual(stopCount, 0)
+        try session.editor.rotatePages(at: IndexSet(integer: 0), clockwise: true)
+        XCTAssertEqual(try Data(contentsOf: sourceURL), originalData)
+        session.close()
+        XCTAssertEqual(stopCount, 1)
+    }
+
+    func testCancelingAsyncOpenReleasesSecurityScopedAccess() async throws {
+        let temporaryDirectory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
+        let sourceURL = temporaryDirectory.appendingPathComponent("cancel-fixture.pdf")
+        try FixturePDFBuilder.writePDF(pageCount: 160, to: sourceURL)
+        var startCount = 0
+        var stopCount = 0
+        let loader = DocumentLoader(
+            securityScopedResources: SecurityScopedResourceAccessProvider(
+                startAccessing: { _ in
+                    startCount += 1
+                    return true
+                },
+                stopAccessing: { _ in stopCount += 1 }
+            )
+        )
+        let openTask = Task { try await loader.openAsync(sourceURL) }
+        while startCount == 0 {
+            await Task.yield()
+        }
+
+        openTask.cancel()
+
+        do {
+            _ = try await openTask.value
+            XCTFail("Expected cancellation")
+        } catch is CancellationError {
+            // Expected.
+        }
+        XCTAssertEqual(startCount, 1)
+        XCTAssertEqual(stopCount, 1)
+    }
+
+    func testAsyncOpenReturnsRetryableLockedHandle() async throws {
+        let temporaryDirectory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
+        let sourceURL = temporaryDirectory.appendingPathComponent("async-protected.pdf")
+        try FixturePDFBuilder.writePasswordProtectedPDF(to: sourceURL)
+
+        guard case .passwordRequired(let handle) = try await DocumentLoader().openAsync(sourceURL) else {
+            return XCTFail("Expected password prompt")
+        }
+
+        XCTAssertNil(try handle.unlock(with: "incorrect"))
+        let session = try XCTUnwrap(handle.unlock(with: "fixture-user"))
+        XCTAssertEqual(session.document.pageCount, 1)
+        XCTAssertEqual(session.securityContext.unlockLevel, .user)
+    }
+
+    func testAsyncInvalidPDFReleasesSecurityScopedAccess() async throws {
+        let temporaryDirectory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
+        let sourceURL = temporaryDirectory.appendingPathComponent("async-corrupt.pdf")
+        try Data("not really a PDF".utf8).write(to: sourceURL)
+        var stopCount = 0
+        let loader = DocumentLoader(
+            securityScopedResources: SecurityScopedResourceAccessProvider(
+                startAccessing: { _ in true },
+                stopAccessing: { _ in stopCount += 1 }
+            )
+        )
+
+        do {
+            _ = try await loader.openAsync(sourceURL)
+            XCTFail("Expected invalid-PDF failure")
+        } catch {
+            XCTAssertEqual(error as? DocumentLoadingError, .invalidPDF)
+        }
+        XCTAssertEqual(stopCount, 1)
+    }
+
     func testOpenValidPDFPreservesSourceAndReportsPageCount() throws {
         let temporaryDirectory = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: temporaryDirectory) }

@@ -3,7 +3,7 @@ import CryptoKit
 import Foundation
 @preconcurrency import PDFKit
 
-struct WorkingPageID: Hashable, Codable {
+struct WorkingPageID: Hashable, Codable, Sendable {
     let documentFingerprint: String
     let originalPageIndex: Int
     let occurrenceID: UUID
@@ -75,7 +75,7 @@ enum ReaderSidebarTab: String, CaseIterable, Identifiable {
     }
 }
 
-struct DocumentOutlineNode: Identifiable, Equatable {
+struct DocumentOutlineNode: Identifiable, Equatable, Sendable {
     let id: String
     let title: String
     let pageID: WorkingPageID?
