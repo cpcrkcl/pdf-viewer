@@ -20,6 +20,8 @@ pub struct DebugCapture {
     pub redact: bool,
     /// `PDFVIEWER_CAPTURE_OCR=1`: open the OCR sheet.
     pub ocr: bool,
+    /// `PDFVIEWER_CAPTURE_CONVERT=1`: open the conversion sheet.
+    pub convert: bool,
 }
 
 impl DebugCapture {
@@ -34,6 +36,7 @@ impl DebugCapture {
             forms: std::env::var_os("PDFVIEWER_CAPTURE_FORMS").is_some(),
             redact: std::env::var_os("PDFVIEWER_CAPTURE_REDACT").is_some(),
             ocr: std::env::var_os("PDFVIEWER_CAPTURE_OCR").is_some(),
+            convert: std::env::var_os("PDFVIEWER_CAPTURE_CONVERT").is_some(),
         })
     }
 

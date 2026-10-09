@@ -46,13 +46,17 @@ window and quit (see `crates/app/src/debug_capture.rs` for scenario flags).
   raster quality, crop margins, double-page splitting, live before/after
   preview, cancellable progress. The text layer is a Type0 font whose CIDs
   are Unicode values, so any BMP script is searchable.
+- Conversion (File ▸ Convert…): PDF pages to PNG/JPEG/TIFF at 72–300 DPI
+  (never overwriting, all-or-nothing), PDF to UTF-8 text, images (PNG, JPEG,
+  TIFF, HEIC via `sips`) to a new PDF, and Office to PDF through the
+  `PDFViewerOfficeHelper` binary and a user-chosen LibreOffice `soffice`.
 
 ## Remaining
 
-1. Conversion: PDF to PNG/JPEG/TIFF and text, images to PDF, and the Office
-   helper as a small Rust binary.
-2. Printing (NSPrintOperation through objc2), a native macOS menu bar, and
+1. Printing (NSPrintOperation through objc2), a native macOS menu bar, and
    Finder open-file events.
-3. Packaging: an `.app` bundle with `libpdfium.dylib` in `Contents/Frameworks`,
+2. Packaging: an `.app` bundle with `libpdfium.dylib` in `Contents/Frameworks`,
+   `PDFViewerOfficeHelper` next to the app binary in `Contents/MacOS` (it
+   should get its own sandbox entitlements: user-selected files, no network),
    entitlements, and an updated `scripts/package-release.sh`.
-4. Remove the Swift sources and the Xcode project once at parity.
+3. Remove the Swift sources and the Xcode project once at parity.

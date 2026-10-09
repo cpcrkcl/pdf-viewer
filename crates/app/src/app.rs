@@ -23,6 +23,7 @@ use crate::annotation_ui::{self, AnnotationRequest, AnnotationTool, StampChoice}
 use crate::document_tab::Tool;
 use crate::forms_ui::{self, FormRequest};
 use crate::libraries_ui::{LibraryDialog, LibraryKind, LibraryOutcome};
+use crate::conversion_ui::{ConversionOutcome, ConversionSheet};
 use crate::ocr_ui::{OcrSheet, SheetOutcome};
 use crate::redaction_ui::{self, RedactionRequest};
 use crate::{interaction, reader_view, sidebar};
@@ -35,6 +36,9 @@ struct Preferences {
     display_mode: DisplayMode,
     sidebar_visible: bool,
     compression: Compression,
+    /// The user-chosen LibreOffice `soffice` for Office conversion.
+    #[serde(default)]
+    soffice: Option<PathBuf>,
 }
 
 impl Default for Preferences {
@@ -44,6 +48,7 @@ impl Default for Preferences {
             display_mode: DisplayMode::Continuous,
             sidebar_visible: true,
             compression: Compression::Standard,
+            soffice: None,
         }
     }
 }
@@ -58,6 +63,10 @@ enum Job {
         tab: u64,
         then: AfterExport,
     },
+    Task {
+        title: String,
+        receiver: Receiver<Completion>,
+    },
     Processing {
         receiver: Receiver<ProcessingMessage>,
         cancel: Arc<AtomicBool>,
@@ -67,6 +76,9 @@ enum Job {
         generation: u64,
     },
 }
+
+/// Work finished on a background thread, applied on the main thread.
+type Completion = Box<dyn FnOnce(&mut PdfViewerApp) + Send>;
 
 enum ProcessingMessage {
     Progress(pdf_ocr::OcrProgress),
@@ -115,6 +127,7 @@ enum Dialog {
         tab: u64,
     },
     Ocr(Box<OcrSheet>),
+    Conversion(Box<ConversionSheet>),
     Note {
         tab: u64,
         page: usize,
@@ -255,6 +268,11 @@ impl PdfViewerApp {
                 Ok(Err(message)) => self.error(message),
                 Ok(Ok(result)) => self.finish_export(result, tab, then),
             },
+            Job::Task { title, receiver } => match receiver.try_recv() {
+                Err(TryRecvError::Empty) => self.job = Some(Job::Task { title, receiver }),
+                Err(TryRecvError::Disconnected) => self.error(format!("{title} stopped unexpectedly.")),
+                Ok(completion) => completion(self),
+            },
             Job::Processing { receiver, cancel, mut progress, tab, generation } => loop {
                 match receiver.try_recv() {
                     Ok(ProcessingMessage::Progress(update)) => progress = Some(update),
@@ -269,6 +287,153 @@ impl PdfViewerApp {
                 }
             },
         }
+    }
+
+    // MARK: Conversion
+
+    /// Runs `work` on a background thread behind the job overlay.
+    fn run_task(&mut self, title: &str, work: impl FnOnce() -> Completion + Send + 'static) {
+        if self.job.is_some() {
+            return self.error("Another operation is still running. Try again when it finishes.");
+        }
+        let (sender, receiver) = channel();
+        std::thread::spawn(move || {
+            let _ = sender.send(work());
+        });
+        self.job = Some(Job::Task { title: title.to_owned(), receiver });
+    }
+
+    fn request_conversion(&mut self) {
+        let tab = self.tabs.get(self.active).map(|tab| tab.id);
+        self.dialogs.push(Dialog::Conversion(Box::new(ConversionSheet::new(tab))));
+    }
+
+    fn handle_conversion(&mut self, tab_id: Option<u64>, outcome: ConversionOutcome) {
+        let tab = tab_id.and_then(|id| self.tab_index(id)).map(|index| &self.tabs[index]);
+        let stem = tab.map(|tab| tab.session.source_path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default());
+        let directory = tab.and_then(|tab| tab.session.source_path.parent().map(Path::to_path_buf));
+        match outcome {
+            ConversionOutcome::Open | ConversionOutcome::Cancel => {}
+            ConversionOutcome::ExportImages { pages, format, dpi } => {
+                let Some(tab) = tab else { return };
+                let mut dialog = rfd::FileDialog::new().set_title(format!("Export PDF Pages as {} Images", format.title()));
+                if let Some(directory) = &directory {
+                    dialog = dialog.set_directory(directory);
+                }
+                let Some(destination) = dialog.pick_folder() else { return };
+                let (data, stem) = (tab.pdf_data(), stem.unwrap_or_default());
+                self.run_task("Exporting images", move || {
+                    let result = pdf_core::conversion::image_files(&data, &pages, format, dpi, &stem)
+                        .and_then(|files| pdf_core::conversion::write_image_files(&files, &destination));
+                    Box::new(move |app: &mut Self| match result {
+                        Ok(paths) => app.dialogs.push(Dialog::Info(format!(
+                            "Exported {} image{} to {}. Existing files were not overwritten.",
+                            paths.len(),
+                            if paths.len() == 1 { "" } else { "s" },
+                            destination.display()
+                        ))),
+                        Err(error) => app.error(error.to_string()),
+                    })
+                });
+            }
+            ConversionOutcome::ExportText { pages } => {
+                let Some(tab) = tab else { return };
+                let mut dialog = rfd::FileDialog::new().add_filter("Plain Text", &["txt"]).set_file_name(format!("{}.txt", stem.unwrap_or_default()));
+                if let Some(directory) = &directory {
+                    dialog = dialog.set_directory(directory);
+                }
+                let Some(destination) = dialog.save_file() else { return };
+                let data = tab.pdf_data();
+                self.run_task("Exporting text", move || {
+                    let result = pdf_core::conversion::searchable_text(&data, &pages)
+                        .and_then(|text| pdf_core::conversion::write_text(&text, &destination));
+                    Box::new(move |app: &mut Self| match result {
+                        Ok(()) => app.dialogs.push(Dialog::Info(format!("Saved text as {}.", destination.display()))),
+                        Err(error) => app.error(error.to_string()),
+                    })
+                });
+            }
+            ConversionOutcome::CreatePdf => {
+                let Some(images) = rfd::FileDialog::new()
+                    .set_title("Choose Images")
+                    .add_filter("Images", &pdf_core::conversion::IMAGE_EXTENSIONS)
+                    .pick_files()
+                else {
+                    return;
+                };
+                if images.len() > pdf_core::conversion::MAXIMUM_IMAGE_COUNT {
+                    return self.error(pdf_core::conversion::ConversionError::TooManyImages.to_string());
+                }
+                let first = images[0].clone();
+                let base = first.file_stem().map(|s| s.to_string_lossy().into_owned()).filter(|s| !s.is_empty()).unwrap_or_else(|| "Images".into());
+                let mut dialog = rfd::FileDialog::new().set_title("Create PDF From Images").add_filter("PDF", &["pdf"]).set_file_name(format!("{base} Converted.pdf"));
+                if let Some(directory) = first.parent() {
+                    dialog = dialog.set_directory(directory);
+                }
+                let Some(destination) = dialog.save_file() else { return };
+                self.run_task("Creating PDF", move || {
+                    let result = pdf_core::conversion::pdf_from_images(&images)
+                        .map_err(|error| error.to_string())
+                        .and_then(|pdf| export::export(&pdf, &first, &destination, &Protection::None, Compression::Standard).map_err(|error| error.to_string()));
+                    Box::new(move |app: &mut Self| match result {
+                        Ok(receipt) => app.dialogs.push(Dialog::ExportReceipt(receipt)),
+                        Err(message) => app.error(message),
+                    })
+                });
+            }
+            ConversionOutcome::ChooseSoffice => {
+                let Some(path) = rfd::FileDialog::new().set_title("Choose the LibreOffice soffice Executable").pick_file() else { return };
+                // Dialogs show last-pushed first, so the sheet goes below any error.
+                self.dialogs.push(Dialog::Conversion(Box::new(ConversionSheet::office(tab_id))));
+                match pdf_core::office::validate_executable(&path) {
+                    Ok(()) => self.preferences.soffice = Some(path),
+                    Err(error) => self.error(error.to_string()),
+                }
+            }
+            ConversionOutcome::ForgetSoffice => {
+                self.preferences.soffice = None;
+                self.dialogs.push(Dialog::Conversion(Box::new(ConversionSheet::office(tab_id))));
+            }
+            ConversionOutcome::ConvertOffice => {
+                let Some(soffice) = self.preferences.soffice.clone() else { return };
+                let Some(helper) = pdf_core::office::helper_path() else {
+                    return self.error(pdf_core::office::OfficeError::HelperUnavailable.to_string());
+                };
+                let Some(input) = rfd::FileDialog::new()
+                    .set_title("Choose an Office Document")
+                    .add_filter("Office Documents", &pdf_core::office::ALLOWED_EXTENSIONS)
+                    .pick_file()
+                else {
+                    return;
+                };
+                self.run_task("Converting locally with LibreOffice", move || {
+                    let result = pdf_core::office::convert_with_helper(&helper, &soffice, &input);
+                    Box::new(move |app: &mut Self| match result {
+                        Ok(pdf) => app.save_office_output(pdf, &input),
+                        Err(message) => app.error(message),
+                    })
+                });
+            }
+        }
+    }
+
+    fn save_office_output(&mut self, pdf: Vec<u8>, input: &Path) {
+        let name = input.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "Document".into());
+        let mut dialog = rfd::FileDialog::new().set_title("Save Converted PDF").add_filter("PDF", &["pdf"]).set_file_name(format!("{name}.pdf"));
+        if let Some(directory) = input.parent() {
+            dialog = dialog.set_directory(directory);
+        }
+        let Some(destination) = dialog.save_file() else {
+            return self.dialogs.push(Dialog::Info("Conversion completed; saving was cancelled.".into()));
+        };
+        let source = input.to_path_buf();
+        self.run_task("Saving converted PDF", move || {
+            let result = export::export(&pdf, &source, &destination, &Protection::None, Compression::Standard);
+            Box::new(move |app: &mut Self| match result {
+                Ok(receipt) => app.dialogs.push(Dialog::ExportReceipt(receipt)),
+                Err(error) => app.error(error.to_string()),
+            })
+        });
     }
 
     // MARK: OCR
@@ -891,6 +1056,9 @@ impl PdfViewerApp {
                 if ui.add_enabled(has_tab, egui::Button::new("Extract Selected Pages…")).clicked() {
                     self.extract_selected();
                 }
+                if ui.button("Convert…").clicked() {
+                    self.request_conversion();
+                }
                 ui.separator();
                 ui.menu_button("Library", |ui| {
                     if ui.button("Export Bookmarks…").clicked() {
@@ -1198,6 +1366,7 @@ impl PdfViewerApp {
                 true,
             ),
             Job::Exporting { .. } => ("Exporting and verifying…".to_owned(), false),
+            Job::Task { title, .. } => (format!("{title}…"), false),
             Job::Processing { .. } => ("Processing pages locally…".to_owned(), true),
         };
         let progress = match job {
@@ -1478,6 +1647,21 @@ impl PdfViewerApp {
                         }
                     }
                 }
+                Dialog::Conversion(sheet) => {
+                    let document = sheet.tab.and_then(|id| self.tab_index(id)).map(|index| {
+                        let tab = &self.tabs[index];
+                        (tab.reader.selected_pages_vec(), tab.session.editor.page_count(), tab.session.security.allows_content_copying())
+                    });
+                    if document.is_none() {
+                        sheet.tab = None;
+                    }
+                    let outcome = sheet.show(ui, document, self.preferences.soffice.as_deref());
+                    if !matches!(outcome, ConversionOutcome::Open) {
+                        keep = false;
+                        let tab = sheet.tab;
+                        follow_up = Some(Box::new(move |app: &mut Self| app.handle_conversion(tab, outcome)));
+                    }
+                }
                 Dialog::Info(message) => {
                     ui.label(message.as_str());
                     ui.add_space(6.0);
@@ -1723,6 +1907,10 @@ impl eframe::App for PdfViewerApp {
                         rect: pdf_core::geometry::PdfBox::new(60.0, 690.0, 560.0, 740.0),
                     });
                     let _ = crate::redaction_ui::apply(tab);
+                }
+                if std::mem::take(&mut capture.convert) {
+                    let id = tab.id;
+                    self.dialogs.push(Dialog::Conversion(Box::new(ConversionSheet::new(Some(id)))));
                 }
                 if std::mem::take(&mut capture.ocr) {
                     let id = tab.id;

@@ -6,7 +6,7 @@ PDFViewer bundles no external conversion executable. Native conversion covers PD
 
 | Helper | Candidate use | License finding | Shipping decision |
 | --- | --- | --- | --- |
-| LibreOffice | User-initiated DOC/DOCX, PPT/PPTX, XLS/XLSX, ODT/ODS/ODP to PDF | LibreOffice is provided under MPL 2.0 and includes separately licensed third-party components. | Optional user-installed integration through the sandboxed `PDFViewerOfficeConversionHelper` XPC target; never bundled or downloaded. |
+| LibreOffice | User-initiated DOC/DOCX, PPT/PPTX, XLS/XLSX, ODT/ODS/ODP to PDF | LibreOffice is provided under MPL 2.0 and includes separately licensed third-party components. | Optional user-installed integration through the separate `PDFViewerOfficeHelper` process (Swift: the sandboxed `PDFViewerOfficeConversionHelper` XPC target); never bundled or downloaded. |
 | qpdf | Structural PDF transformations and repair | qpdf 12 documentation states Apache License 2.0. | Not needed for shipped native conversions. Re-evaluate only for a concrete operation PDFKit cannot validate. |
 | Ghostscript | PDF/PostScript rendering, optimization, or some conversions | Ghostscript is offered under AGPL or a commercial Artifex license. | Do not bundle without legal approval and an explicit compatible distribution choice. |
 
@@ -17,6 +17,8 @@ Official references:
 - Ghostscript licensing FAQ: https://ghostscript.com/faq/index.html
 
 ## Implemented helper boundary
+
+The Rust app (`crates/pdf-core/src/office.rs`, `crates/app/src/bin/office_helper.rs`) runs the helper as a child process with the chosen paths as arguments; it writes the PDF to standard output and short generic errors to standard error. It also gives LibreOffice a private profile directory so a running LibreOffice instance can't interfere. The Swift XPC design below applies until the Swift target is removed; the Rust bundle should give the helper equivalent sandbox entitlements.
 
 1. Installation is explicit and user-controlled. PDFViewer accepts only a selected regular, executable, non-symlink file named `soffice` and stores its security-scoped bookmark.
 2. The app sends security-scoped bookmarks for only that executable and the selected Office document to an embedded XPC service.

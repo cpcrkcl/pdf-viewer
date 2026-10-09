@@ -2,6 +2,7 @@
 
 mod annotation_ui;
 mod app;
+mod conversion_ui;
 mod debug_capture;
 mod document_tab;
 mod fonts;

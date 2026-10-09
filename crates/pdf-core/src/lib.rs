@@ -3,6 +3,7 @@
 
 pub mod annotations;
 pub mod appearance;
+pub mod conversion;
 pub mod editor;
 pub mod engine;
 pub mod error;
@@ -12,6 +13,7 @@ pub mod geometry;
 pub mod ids;
 pub mod loader;
 pub mod navigation;
+pub mod office;
 pub mod outline;
 pub mod persistence;
 pub mod raster;
