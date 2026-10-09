@@ -21,6 +21,7 @@ use crate::annotation_ui::{self, AnnotationRequest, AnnotationTool, StampChoice}
 use crate::document_tab::Tool;
 use crate::forms_ui::{self, FormRequest};
 use crate::libraries_ui::{LibraryDialog, LibraryKind, LibraryOutcome};
+use crate::redaction_ui::{self, RedactionRequest};
 use crate::{interaction, reader_view, sidebar};
 
 const PREFERENCES_KEY: &str = "pdfviewer.preferences.v1";
@@ -94,6 +95,9 @@ enum Dialog {
     },
     ConfirmLink(String),
     Info(String),
+    ConfirmRedaction {
+        tab: u64,
+    },
     Note {
         tab: u64,
         page: usize,
@@ -1049,6 +1053,10 @@ impl PdfViewerApp {
                 tab.tool = if annotating { Tool::SelectText } else { Tool::Annotate(AnnotationTool::Select) };
                 tab.annotations.selected = None;
             }
+            let redacting = tab.tool == Tool::Redact;
+            if ui.selectable_label(redacting, "▮ Redact").on_hover_text("Permanent Redaction").clicked() {
+                tab.tool = if redacting { Tool::SelectText } else { Tool::Redact };
+            }
             if ui.selectable_label(tab.forms.visible, "Form").on_hover_text("Fill Form Fields").clicked() {
                 tab.forms.visible = !tab.forms.visible;
             }
@@ -1316,6 +1324,39 @@ impl PdfViewerApp {
                         }
                     });
                 }
+                Dialog::ConfirmRedaction { tab } => {
+                    let summary = self.tab_index(*tab).map(|index| {
+                        let regions = &self.tabs[index].redaction.regions;
+                        let pages: std::collections::BTreeSet<usize> = regions.iter().map(|r| r.page).collect();
+                        (regions.len(), pages.len())
+                    });
+                    let Some((areas, pages)) = summary else {
+                        keep = false;
+                        return;
+                    };
+                    ui.heading("Apply permanent redaction?");
+                    ui.label(format!(
+                        "{areas} area{} on {pages} page{} will be burned in. Those pages become images: their text, links and annotations are removed, and the document's metadata and outline are cleared.",
+                        if areas == 1 { "" } else { "s" },
+                        if pages == 1 { "" } else { "s" },
+                    ));
+                    ui.weak("You can undo until you close the document. Export afterwards to share the redacted copy.");
+                    ui.horizontal(|ui| {
+                        if ui.button("Cancel").clicked() {
+                            keep = false;
+                        }
+                        if ui.button(RichText::new("Redact Permanently").color(mocha::RED)).clicked() {
+                            keep = false;
+                            let tab = *tab;
+                            follow_up = Some(Box::new(move |app: &mut Self| {
+                                let Some(index) = app.tab_index(tab) else { return };
+                                if let Err(message) = redaction_ui::apply(&mut app.tabs[index]) {
+                                    app.error(message);
+                                }
+                            }));
+                        }
+                    });
+                }
                 Dialog::Info(message) => {
                     ui.label(message.as_str());
                     ui.add_space(6.0);
@@ -1430,6 +1471,7 @@ impl eframe::App for PdfViewerApp {
         self.renderer.retain_documents(live);
 
         let mut annotation_request = AnnotationRequest::None;
+        let mut redaction_request = RedactionRequest::None;
         egui::Panel::top("menu").show(ui, |ui| {
             self.menu_bar(ui);
             if !self.tabs.is_empty() {
@@ -1444,9 +1486,23 @@ impl eframe::App for PdfViewerApp {
                     ui.separator();
                     annotation_request = annotation_ui::toolbar(ui, tab, &signatures, &stamps);
                 }
+                if let Some(tab) = self.tabs.get_mut(self.active)
+                    && tab.tool == Tool::Redact
+                {
+                    ui.separator();
+                    redaction_request = redaction_ui::toolbar(ui, tab);
+                }
             }
         });
         self.handle_annotation_request(annotation_request);
+        match redaction_request {
+            RedactionRequest::None => {}
+            RedactionRequest::Error(message) => self.error(message),
+            RedactionRequest::ConfirmApply => {
+                let tab = self.tabs[self.active].id;
+                self.dialogs.push(Dialog::ConfirmRedaction { tab });
+            }
+        }
 
         let mut form_request = FormRequest::None;
         if let Some(tab) = self.tabs.get_mut(self.active)
@@ -1488,6 +1544,8 @@ impl eframe::App for PdfViewerApp {
                 interaction::paint_text_overlays(&painter, &ctx, tab, &response);
                 let request = annotation_ui::handle(&ctx, tab, &response);
                 annotation_ui::paint_overlays(&painter, tab, &response);
+                redaction_ui::handle(&ctx, tab, &response);
+                redaction_ui::paint(&painter, tab, &response);
                 if let Some(click) = response.click
                     && tab.tool == Tool::SelectText
                     && let Some(field) = tab.form_fields().into_iter().find(|f| f.page == click.page && f.rect.contains(click.point))
@@ -1536,6 +1594,14 @@ impl eframe::App for PdfViewerApp {
                 if std::mem::take(&mut capture.rotate) {
                     let _ = tab.session.editor.rotate_pages(&[0], true);
                     tab.after_mutation(Some(0));
+                }
+                if std::mem::take(&mut capture.redact) {
+                    tab.redaction.reason_label = "Privileged".into();
+                    tab.redaction.regions.push(pdf_core::redaction::RedactionRegion {
+                        page: 0,
+                        rect: pdf_core::geometry::PdfBox::new(60.0, 690.0, 560.0, 740.0),
+                    });
+                    let _ = crate::redaction_ui::apply(tab);
                 }
                 if std::mem::take(&mut capture.forms) {
                     tab.forms.visible = true;

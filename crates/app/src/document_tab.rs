@@ -98,6 +98,7 @@ pub struct DocumentTab {
     pub selection: Option<TextSelection>,
     pub annotations: crate::annotation_ui::AnnotationState,
     pub forms: crate::forms_ui::FormPanelState,
+    pub redaction: crate::redaction_ui::RedactionState,
     /// Scroll the reader so this page is at the top on the next frame.
     pub scroll_to_page: Option<usize>,
     /// Scroll so this user-space point of the page is visible.
@@ -124,6 +125,7 @@ impl DocumentTab {
             selection: None,
             annotations: Default::default(),
             forms: Default::default(),
+            redaction: Default::default(),
             scroll_to_page: None,
             scroll_to_point: None,
             go_to_page_text: "1".into(),

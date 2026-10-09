@@ -12,6 +12,7 @@ mod libraries_ui;
 mod macos;
 mod reader_state;
 mod reader_view;
+mod redaction_ui;
 mod render;
 mod sidebar;
 mod theme;

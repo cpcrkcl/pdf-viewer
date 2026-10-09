@@ -16,6 +16,8 @@ pub struct DebugCapture {
     pub annotate: bool,
     /// `PDFVIEWER_CAPTURE_FORMS=1`: open the form panel.
     pub forms: bool,
+    /// `PDFVIEWER_CAPTURE_REDACT=1`: redact a band near the top of page 1.
+    pub redact: bool,
 }
 
 impl DebugCapture {
@@ -28,6 +30,7 @@ impl DebugCapture {
             rotate: std::env::var_os("PDFVIEWER_CAPTURE_ROTATE").is_some(),
             annotate: std::env::var_os("PDFVIEWER_CAPTURE_ANNOTATE").is_some(),
             forms: std::env::var_os("PDFVIEWER_CAPTURE_FORMS").is_some(),
+            redact: std::env::var_os("PDFVIEWER_CAPTURE_REDACT").is_some(),
         })
     }
 
