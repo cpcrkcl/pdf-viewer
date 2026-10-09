@@ -293,7 +293,7 @@ fn page_ids_from_kids(document: &Document) -> CoreResult<Vec<ObjectId>> {
 const IMPORTED_FIELDS_KEY: &str = "PDFViewerImportedFields";
 
 /// Top-level AcroForm field ids that own a widget on any of `pages`.
-fn root_fields_for_pages(document: &Document, pages: &[ObjectId]) -> Vec<ObjectId> {
+pub(crate) fn root_fields_for_pages(document: &Document, pages: &[ObjectId]) -> Vec<ObjectId> {
     let mut roots = Vec::new();
     for page in pages {
         let annotation_ids: Vec<ObjectId> = page_dictionary(document, *page)

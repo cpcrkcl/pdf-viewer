@@ -65,6 +65,10 @@ pub enum CoreError {
 
     #[error("{0}")]
     Form(String),
+    #[error("{0}")]
+    Redaction(String),
+    #[error("PDFViewer could not rasterize one of the selected pages.")]
+    CouldNotRasterize,
 
     #[error("{0}")]
     Io(String),
