@@ -17,6 +17,10 @@ use crate::document_tab::DocumentTab;
 use crate::reader_state::{DisplayMode, PageLabelStyle, ReaderTheme};
 use crate::render::RenderService;
 use crate::theme::{self, mocha};
+use crate::annotation_ui::{self, AnnotationRequest, AnnotationTool, StampChoice};
+use crate::document_tab::Tool;
+use crate::forms_ui::{self, FormRequest};
+use crate::libraries_ui::{LibraryDialog, LibraryKind, LibraryOutcome};
 use crate::{interaction, reader_view, sidebar};
 
 const PREFERENCES_KEY: &str = "pdfviewer.preferences.v1";
@@ -89,6 +93,23 @@ enum Dialog {
         tab: u64,
     },
     ConfirmLink(String),
+    Info(String),
+    Note {
+        tab: u64,
+        page: usize,
+        target: NoteTarget,
+        text: String,
+    },
+    Library {
+        dialog: LibraryDialog,
+        /// Place the chosen image here once picked.
+        place: Option<(u64, usize, (f32, f32))>,
+    },
+}
+
+enum NoteTarget {
+    New((f32, f32)),
+    Existing(pdf_core::annotations::AnnotationId),
 }
 
 pub struct PdfViewerApp {
@@ -103,11 +124,15 @@ pub struct PdfViewerApp {
     dialogs: Vec<Dialog>,
     allow_quit: bool,
     capture: Option<crate::debug_capture::DebugCapture>,
+    signatures: pdf_core::signatures::SignatureLibrary,
+    stamps: pdf_core::signatures::SignatureLibrary,
+    library_thumbnails: std::collections::HashMap<uuid::Uuid, Option<egui::TextureHandle>>,
 }
 
 impl PdfViewerApp {
     pub fn new(cc: &eframe::CreationContext<'_>, initial_paths: Vec<PathBuf>) -> Self {
         theme::apply(&cc.egui_ctx);
+        crate::fonts::install(&cc.egui_ctx);
         let preferences = cc
             .storage
             .and_then(|storage| eframe::get_value(storage, PREFERENCES_KEY))
@@ -125,6 +150,9 @@ impl PdfViewerApp {
             dialogs: Vec::new(),
             allow_quit: false,
             capture: crate::debug_capture::DebugCapture::from_env(),
+            signatures: pdf_core::signatures::SignatureLibrary::new(support.join("Signatures"), "Visual Signature"),
+            stamps: pdf_core::signatures::SignatureLibrary::new(support.join("Stamps"), "Custom Stamp"),
+            library_thumbnails: Default::default(),
         };
         if let Some(error) = pdf_core::engine::pdfium().err() {
             app.dialogs.push(Dialog::Error(error.to_string()));
@@ -430,6 +458,125 @@ impl PdfViewerApp {
         ctx.copy_text(text);
     }
 
+    // MARK: Annotations and forms
+
+    fn handle_annotation_request(&mut self, request: AnnotationRequest) {
+        let Some(tab_id) = self.tabs.get(self.active).map(|tab| tab.id) else { return };
+        match request {
+            AnnotationRequest::None => {}
+            AnnotationRequest::Error(message) => self.error(message),
+            AnnotationRequest::NewNote { page, point } => self.dialogs.push(Dialog::Note {
+                tab: tab_id,
+                page,
+                target: NoteTarget::New(point),
+                text: String::new(),
+            }),
+            AnnotationRequest::EditNote { page, id, contents } => self.dialogs.push(Dialog::Note {
+                tab: tab_id,
+                page,
+                target: NoteTarget::Existing(id),
+                text: contents,
+            }),
+            AnnotationRequest::PlaceStamp { page, point, choice } => {
+                let result = match choice {
+                    StampChoice::Preset(preset) => {
+                        let tab = &mut self.tabs[self.active];
+                        tab.annotate(|document| pdf_core::annotations::add_stamp(document, page, point, preset).map(|_| ()))
+                    }
+                    StampChoice::Custom(id) => match self.stamps.image_data(id) {
+                        Ok(data) => {
+                            let name = self.stamps.signatures().iter().find(|s| s.id == id).map(|s| s.display_name.clone()).unwrap_or_default();
+                            let tab = &mut self.tabs[self.active];
+                            annotation_ui::place_image(tab, page, point, &data, pdf_core::annotations::SignatureSize::Medium, Some(&name))
+                        }
+                        Err(error) => Err(error.to_string()),
+                    },
+                };
+                if let Err(message) = result {
+                    self.error(message);
+                }
+            }
+            AnnotationRequest::PlaceSignature { page, point } => {
+                let chosen = self.tabs[self.active].annotations.signature;
+                match chosen.map(|id| self.signatures.image_data(id)) {
+                    Some(Ok(data)) => {
+                        let tab = &mut self.tabs[self.active];
+                        let size = tab.annotations.signature_size;
+                        if let Err(message) = annotation_ui::place_image(tab, page, point, &data, size, None) {
+                            self.error(message);
+                        }
+                    }
+                    _ => self.dialogs.push(Dialog::Library {
+                        dialog: LibraryDialog::new(LibraryKind::Signatures),
+                        place: Some((tab_id, page, point)),
+                    }),
+                }
+            }
+            AnnotationRequest::OpenSignatureLibrary => self.dialogs.push(Dialog::Library {
+                dialog: LibraryDialog::new(LibraryKind::Signatures),
+                place: None,
+            }),
+            AnnotationRequest::OpenStampLibrary => self.dialogs.push(Dialog::Library {
+                dialog: LibraryDialog::new(LibraryKind::Stamps),
+                place: None,
+            }),
+        }
+    }
+
+    fn use_library_item(&mut self, kind: LibraryKind, id: uuid::Uuid, place: Option<(u64, usize, (f32, f32))>) {
+        let Some(index) = place.and_then(|(tab, _, _)| self.tab_index(tab)).or(Some(self.active)) else { return };
+        let Some(tab) = self.tabs.get_mut(index) else { return };
+        match kind {
+            LibraryKind::Signatures => {
+                tab.annotations.signature = Some(id);
+                tab.tool = Tool::Annotate(AnnotationTool::Signature);
+                if let Some((_, page, point)) = place {
+                    let size = tab.annotations.signature_size;
+                    let result = self.signatures.image_data(id).map_err(|error| error.to_string()).and_then(|data| {
+                        annotation_ui::place_image(&mut self.tabs[index], page, point, &data, size, None)
+                    });
+                    if let Err(message) = result {
+                        self.error(message);
+                    }
+                }
+            }
+            LibraryKind::Stamps => {
+                tab.annotations.stamp = StampChoice::Custom(id);
+                tab.tool = Tool::Annotate(AnnotationTool::Stamp);
+            }
+        }
+    }
+
+    fn handle_form_request(&mut self, request: FormRequest) {
+        match request {
+            FormRequest::None => {}
+            FormRequest::Error(message) => self.error(message),
+            FormRequest::Info(message) => self.dialogs.push(Dialog::Info(message)),
+            FormRequest::ExportValues(json) => {
+                self.export_library_json("Export Form Values", "Form Values.json", Ok(json));
+            }
+            FormRequest::ExportFlattened(bytes) => {
+                let Some(tab) = self.tabs.get(self.active) else { return };
+                let protection = match protection_for(&tab.session) {
+                    Ok(protection) => protection,
+                    Err(message) => return self.error(message),
+                };
+                let source = tab.session.source_path.clone();
+                let Some(destination) = rfd::FileDialog::new()
+                    .add_filter("PDF", &["pdf"])
+                    .set_file_name(format!("{} (flattened).pdf", source.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()))
+                    .save_file()
+                else {
+                    return;
+                };
+                match export::export(&bytes, &source, &destination, &protection, self.preferences.compression) {
+                    Ok(result) => self.dialogs.push(Dialog::ExportReceipt(result)),
+                    Err(error) => self.error(error.to_string()),
+                }
+            }
+        }
+    }
+
     // MARK: Library JSON
 
     fn export_library_json(&mut self, title: &str, file_name: &str, data: Result<Vec<u8>, CoreError>) {
@@ -531,6 +678,12 @@ impl PdfViewerApp {
         if shortcut(Modifiers::CTRL, Key::Tab) {
             self.active = (self.active + 1) % self.tabs.len();
         }
+        if shortcut(command_shift, Key::A) {
+            self.active_tab().map(|tab| {
+                let annotating = matches!(tab.tool, Tool::Annotate(_));
+                tab.tool = if annotating { Tool::SelectText } else { Tool::Annotate(AnnotationTool::Select) };
+            });
+        }
         if shortcut(command, Key::F) {
             self.active_tab().map(|tab| {
                 tab.search.focus_requested = true;
@@ -566,6 +719,10 @@ impl PdfViewerApp {
         }
         if pressed(Key::Escape) {
             tab.selection = None;
+            tab.annotations.selected = None;
+            if matches!(tab.tool, Tool::Annotate(tool) if tool != AnnotationTool::Select) {
+                tab.tool = Tool::Annotate(AnnotationTool::Select);
+            }
         }
         if pressed(Key::Home) {
             tab.show_page(0);
@@ -574,7 +731,11 @@ impl PdfViewerApp {
             tab.show_page(last);
         }
         if pressed(Key::Delete) || pressed(Key::Backspace) {
-            if tab.reader.is_sidebar_visible {
+            if tab.annotations.selected.is_some() {
+                if let Err(message) = annotation_ui::delete_selected(tab) {
+                    self.error(message);
+                }
+            } else if tab.reader.is_sidebar_visible && tab.reader.sidebar_tab == crate::reader_state::SidebarTab::Thumbnails {
                 self.request_delete_selected();
             }
         }
@@ -882,6 +1043,15 @@ impl PdfViewerApp {
                         }
                     }
                 });
+            ui.separator();
+            let annotating = matches!(tab.tool, Tool::Annotate(_));
+            if ui.selectable_label(annotating, "✏ Annotate").on_hover_text("Annotation Tools (⇧⌘A)").clicked() {
+                tab.tool = if annotating { Tool::SelectText } else { Tool::Annotate(AnnotationTool::Select) };
+                tab.annotations.selected = None;
+            }
+            if ui.selectable_label(tab.forms.visible, "Form").on_hover_text("Fill Form Fields").clicked() {
+                tab.forms.visible = !tab.forms.visible;
+            }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 search_field(ui, tab);
                 if tab.session.security.is_encrypted {
@@ -1146,6 +1316,67 @@ impl PdfViewerApp {
                         }
                     });
                 }
+                Dialog::Info(message) => {
+                    ui.label(message.as_str());
+                    ui.add_space(6.0);
+                    if ok_button(ui, "OK") {
+                        keep = false;
+                    }
+                }
+                Dialog::Note { tab, page, target, text } => {
+                    ui.heading(match target {
+                        NoteTarget::New(_) => "New Text Note",
+                        NoteTarget::Existing(_) => "Edit Text Note",
+                    });
+                    let response = ui.add(egui::TextEdit::multiline(text).desired_rows(5).desired_width(f32::INFINITY).char_limit(10_000));
+                    if ui.memory(|memory| memory.focused().is_none()) {
+                        response.request_focus();
+                    }
+                    ui.horizontal(|ui| {
+                        if ui.button("Cancel").clicked() {
+                            keep = false;
+                        }
+                        if ui.add_enabled(!text.trim().is_empty(), egui::Button::new("Save")).clicked() {
+                            keep = false;
+                            let (tab, page, contents) = (*tab, *page, text.clone());
+                            let target = match target {
+                                NoteTarget::New(point) => NoteTarget::New(*point),
+                                NoteTarget::Existing(id) => NoteTarget::Existing(*id),
+                            };
+                            follow_up = Some(Box::new(move |app: &mut Self| {
+                                let Some(index) = app.tab_index(tab) else { return };
+                                let tab = &mut app.tabs[index];
+                                let color = tab.annotations.color;
+                                let result = tab.annotate(|document| match target {
+                                    NoteTarget::New(point) => pdf_core::annotations::add_text_note(document, page, point, &contents, color).map(|_| ()),
+                                    NoteTarget::Existing(id) => pdf_core::annotations::set_note_contents(document, page, id, &contents),
+                                });
+                                if let Err(message) = result {
+                                    app.error(message);
+                                }
+                            }));
+                        }
+                    });
+                }
+                Dialog::Library { dialog, place } => {
+                    ui.set_width(480.0);
+                    let library = match dialog.kind {
+                        LibraryKind::Signatures => &mut self.signatures,
+                        LibraryKind::Stamps => &mut self.stamps,
+                    };
+                    match dialog.show(ui, library, &mut self.library_thumbnails) {
+                        LibraryOutcome::Open => {}
+                        LibraryOutcome::Close => keep = false,
+                        LibraryOutcome::Error(message) => {
+                            follow_up = Some(Box::new(move |app: &mut Self| app.error(message)));
+                        }
+                        LibraryOutcome::Chose(id) => {
+                            keep = false;
+                            let (kind, place) = (dialog.kind, *place);
+                            follow_up = Some(Box::new(move |app: &mut Self| app.use_library_item(kind, id, place)));
+                        }
+                    }
+                }
                 Dialog::PageLabels { tab } => {
                     ui.heading("Page Labels");
                     let Some(index) = self.tab_index(*tab) else {
@@ -1198,6 +1429,7 @@ impl eframe::App for PdfViewerApp {
         let live: HashSet<_> = self.tabs.iter().map(DocumentTab::document_key).collect();
         self.renderer.retain_documents(live);
 
+        let mut annotation_request = AnnotationRequest::None;
         egui::Panel::top("menu").show(ui, |ui| {
             self.menu_bar(ui);
             if !self.tabs.is_empty() {
@@ -1205,8 +1437,30 @@ impl eframe::App for PdfViewerApp {
                     self.tab_strip(ui);
                 }
                 self.toolbar(ui);
+                let (signatures, stamps) = (self.signatures.signatures().to_vec(), self.stamps.signatures().to_vec());
+                if let Some(tab) = self.tabs.get_mut(self.active)
+                    && matches!(tab.tool, Tool::Annotate(_))
+                {
+                    ui.separator();
+                    annotation_request = annotation_ui::toolbar(ui, tab, &signatures, &stamps);
+                }
             }
         });
+        self.handle_annotation_request(annotation_request);
+
+        let mut form_request = FormRequest::None;
+        if let Some(tab) = self.tabs.get_mut(self.active)
+            && tab.forms.visible
+        {
+            egui::Panel::right("forms")
+                .resizable(true)
+                .default_size(280.0)
+                .size_range(220.0..=440.0)
+                .show(ui, |ui| {
+                    form_request = forms_ui::panel(ui, tab);
+                });
+        }
+        self.handle_form_request(form_request);
 
         let mut sidebar_action = sidebar::SidebarAction::None;
         if let Some(tab) = self.tabs.get_mut(self.active)
@@ -1225,12 +1479,23 @@ impl eframe::App for PdfViewerApp {
             self.dialogs.push(Dialog::RenameBookmark { id, input });
         }
 
+        let mut deferred_request = AnnotationRequest::None;
         egui::CentralPanel::no_frame().show(ui, |ui| {
             if let Some(tab) = self.tabs.get_mut(self.active) {
                 tab.poll_search();
                 let response = reader_view::show(ui, tab, &mut self.renderer);
                 let painter = ui.painter_at(response.canvas);
                 interaction::paint_text_overlays(&painter, &ctx, tab, &response);
+                let request = annotation_ui::handle(&ctx, tab, &response);
+                annotation_ui::paint_overlays(&painter, tab, &response);
+                if let Some(click) = response.click
+                    && tab.tool == Tool::SelectText
+                    && let Some(field) = tab.form_fields().into_iter().find(|f| f.page == click.page && f.rect.contains(click.point))
+                {
+                    tab.forms.visible = true;
+                    tab.forms.focus = Some(field.name);
+                }
+                deferred_request = request;
                 match interaction::handle_select_text(&ctx, tab, &response) {
                     interaction::InteractionAction::None => {}
                     interaction::InteractionAction::ConfirmExternalLink(uri) => self.dialogs.push(Dialog::ConfirmLink(uri)),
@@ -1243,6 +1508,8 @@ impl eframe::App for PdfViewerApp {
                 self.empty_state(ui);
             }
         });
+
+        self.handle_annotation_request(deferred_request);
 
         if ctx.input(|input| !input.raw.hovered_files.is_empty()) {
             let screen = ctx.content_rect();
@@ -1269,6 +1536,28 @@ impl eframe::App for PdfViewerApp {
                 if std::mem::take(&mut capture.rotate) {
                     let _ = tab.session.editor.rotate_pages(&[0], true);
                     tab.after_mutation(Some(0));
+                }
+                if std::mem::take(&mut capture.forms) {
+                    tab.forms.visible = true;
+                }
+                if std::mem::take(&mut capture.annotate) {
+                    use pdf_core::annotations::*;
+                    use pdf_core::geometry::PdfBox;
+                    let _ = tab.annotate(|d| {
+                        add_text_markup(d, MarkupKind::Highlight, &[(0, vec![PdfBox::new(90.0, 700.0, 330.0, 722.0)])], palette::YELLOW)?;
+                        add_ink(d, 0, &[(80.0, 300.0), (120.0, 340.0), (160.0, 290.0), (200.0, 350.0)], palette::BLUE, LineWidth::Bold)?;
+                        add_shape(d, ShapeKind::Rectangle, 0, (250.0, 280.0), (360.0, 360.0), palette::RED, LineWidth::Standard)?;
+                        add_shape(d, ShapeKind::Oval, 0, (380.0, 280.0), (480.0, 360.0), palette::GREEN, LineWidth::Standard)?;
+                        add_shape(d, ShapeKind::Arrow, 0, (100.0, 200.0), (250.0, 240.0), palette::PINK, LineWidth::Bold)?;
+                        add_text_note(d, 0, (520.0, 330.0), "Note", palette::YELLOW)?;
+                        add_stamp(d, 0, (420.0, 200.0), StampPreset::Approved)?;
+                        Ok(())
+                    });
+                    tab.tool = crate::document_tab::Tool::Annotate(crate::annotation_ui::AnnotationTool::Select);
+                    tab.refresh_annotation_index();
+                    if let Some(info) = tab.annotations.index.first().and_then(|page| page.get(2)).cloned() {
+                        tab.annotations.selected = Some(crate::annotation_ui::Selected { page: 0, info });
+                    }
                 }
                 if let Some(query) = capture.search.take() {
                     tab.search.query = query;

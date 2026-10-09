@@ -220,6 +220,8 @@ impl DocumentEditor {
         let ids = self.page_ids().to_vec();
         let mut document = self.parse()?;
         body(&mut document)?;
+        // Replaced appearance streams and deleted annotations become garbage.
+        document.prune_objects();
         let bytes = structure::serialize(&mut document)?;
         self.commit(bytes, ids)
     }

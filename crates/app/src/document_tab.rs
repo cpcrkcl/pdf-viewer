@@ -96,6 +96,8 @@ pub struct DocumentTab {
     pub search: SearchState,
     pub tool: Tool,
     pub selection: Option<TextSelection>,
+    pub annotations: crate::annotation_ui::AnnotationState,
+    pub forms: crate::forms_ui::FormPanelState,
     /// Scroll the reader so this page is at the top on the next frame.
     pub scroll_to_page: Option<usize>,
     /// Scroll so this user-space point of the page is visible.
@@ -120,6 +122,8 @@ impl DocumentTab {
             search: SearchState::default(),
             tool: Tool::SelectText,
             selection: None,
+            annotations: Default::default(),
+            forms: Default::default(),
             scroll_to_page: None,
             scroll_to_point: None,
             go_to_page_text: "1".into(),
@@ -181,6 +185,7 @@ impl DocumentTab {
         self.reader.synchronize(self.session.editor.page_count(), preferred_page);
         self.go_to_page_text = (self.reader.selected_page_index() + 1).to_string();
         self.selection = None;
+        self.refresh_annotation_index();
         // Search results describe the previous revision.
         if self.search.outcome.is_some() {
             self.search.outcome = None;

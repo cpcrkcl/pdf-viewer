@@ -2,10 +2,12 @@
 //! revisions, page operations, navigation and local persistence.
 
 pub mod annotations;
+pub mod appearance;
 pub mod editor;
 pub mod engine;
 pub mod error;
 pub mod export;
+pub mod forms;
 pub mod geometry;
 pub mod ids;
 pub mod loader;
@@ -14,6 +16,7 @@ pub mod outline;
 pub mod persistence;
 pub mod recents;
 pub mod security;
+pub mod signatures;
 pub mod structure;
 pub mod testing;
 pub mod text;

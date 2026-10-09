@@ -46,6 +46,14 @@ pub enum CoreError {
     CouldNotCreateAnnotation,
     #[error("This document's permissions do not allow that change.")]
     PermissionDenied,
+    #[error("Choose a valid PNG or JPEG image.")]
+    InvalidImage,
+    #[error("Choose an image smaller than 25 megapixels and 25 MB.")]
+    ImageTooLarge,
+    #[error("Draw a signature before adding it.")]
+    EmptyDrawing,
+    #[error("That saved signature is no longer available.")]
+    MissingSignature,
 
     // Export
     #[error("Choose a different destination; the original PDF is never replaced.")]
@@ -54,6 +62,9 @@ pub enum CoreError {
     ExportWriteFailed,
     #[error("The exported file failed validation after writing.")]
     ExportValidationFailed,
+
+    #[error("{0}")]
+    Form(String),
 
     #[error("{0}")]
     Io(String),

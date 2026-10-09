@@ -12,6 +12,10 @@ pub struct DebugCapture {
     pub search: Option<String>,
     /// `PDFVIEWER_CAPTURE_ROTATE=1`: rotate the first page before capturing.
     pub rotate: bool,
+    /// `PDFVIEWER_CAPTURE_ANNOTATE=1`: add sample annotations to page 1.
+    pub annotate: bool,
+    /// `PDFVIEWER_CAPTURE_FORMS=1`: open the form panel.
+    pub forms: bool,
 }
 
 impl DebugCapture {
@@ -22,6 +26,8 @@ impl DebugCapture {
             requested: false,
             search: std::env::var("PDFVIEWER_CAPTURE_SEARCH").ok(),
             rotate: std::env::var_os("PDFVIEWER_CAPTURE_ROTATE").is_some(),
+            annotate: std::env::var_os("PDFVIEWER_CAPTURE_ANNOTATE").is_some(),
+            forms: std::env::var_os("PDFVIEWER_CAPTURE_FORMS").is_some(),
         })
     }
 
