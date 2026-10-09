@@ -66,6 +66,29 @@ final class PDFExporterTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: sourceURL), originalSourceData)
     }
 
+    func testExportRejectsAHardLinkToTheOriginalPDF() throws {
+        let temporaryDirectory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
+
+        let sourceURL = temporaryDirectory.appendingPathComponent("source.pdf")
+        let hardLinkURL = temporaryDirectory.appendingPathComponent("hard-link.pdf")
+        try FixturePDFBuilder.writeTextPDF(pages: ["Alpha"], to: sourceURL)
+        try FileManager.default.linkItem(at: sourceURL, to: hardLinkURL)
+        let sourceData = try Data(contentsOf: sourceURL)
+        let document = try openDocument(at: sourceURL)
+
+        XCTAssertThrowsError(
+            try PDFExporter().export(
+                document: document,
+                sourceURL: sourceURL,
+                to: hardLinkURL
+            )
+        ) { error in
+            XCTAssertEqual(error as? PDFExportError, .sourceAndDestinationMatch)
+        }
+        XCTAssertEqual(try Data(contentsOf: sourceURL), sourceData)
+    }
+
     func testExportCanReplaceAnExplicitlyChosenNonSourceOutput() throws {
         let temporaryDirectory = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: temporaryDirectory) }

@@ -196,6 +196,31 @@ final class NavigationModelsTests: XCTestCase {
         return session
     }
 
+    func testBookmarkJSONRoundTripMergesWithoutDuplicates() throws {
+        let firstSuite = "BookmarkExport-\(UUID().uuidString)"
+        let secondSuite = "BookmarkImport-\(UUID().uuidString)"
+        let firstDefaults = try XCTUnwrap(UserDefaults(suiteName: firstSuite))
+        let secondDefaults = try XCTUnwrap(UserDefaults(suiteName: secondSuite))
+        defer {
+            firstDefaults.removePersistentDomain(forName: firstSuite)
+            secondDefaults.removePersistentDomain(forName: secondSuite)
+        }
+        let fingerprint = String(repeating: "a", count: 64)
+        let source = PageBookmarkStore(defaults: firstDefaults)
+        source.add(
+            documentFingerprint: fingerprint,
+            pageID: .original(documentFingerprint: fingerprint, pageIndex: 2),
+            label: "Important"
+        )
+        let data = try source.exportJSON()
+
+        let destination = PageBookmarkStore(defaults: secondDefaults)
+        try destination.importJSON(data)
+        try destination.importJSON(data)
+        XCTAssertEqual(destination.bookmarks.count, 1)
+        XCTAssertEqual(destination.bookmarks.first?.label, "Important")
+    }
+
     private func makeDocument(pageCount: Int) throws -> PDFDocument {
         let document = PDFDocument()
         for _ in 0..<pageCount {

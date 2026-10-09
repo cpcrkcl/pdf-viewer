@@ -4,6 +4,7 @@ private enum PDFConversionMode: String, CaseIterable, Identifiable {
     case images
     case text
     case createPDF
+    case office
 
     var id: Self { self }
 
@@ -15,6 +16,8 @@ private enum PDFConversionMode: String, CaseIterable, Identifiable {
             "PDF to Text"
         case .createPDF:
             "Images to PDF"
+        case .office:
+            "Office to PDF"
         }
     }
 }
@@ -63,20 +66,16 @@ struct PDFConversionSheet: View {
         }
         .padding(22)
         .frame(minWidth: 540, idealWidth: 600)
+        .background(CatppuccinMocha.base)
     }
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Label("Local Conversion", systemImage: "arrow.triangle.2.circlepath.doc.on.clipboard")
-                .font(.title2.weight(.semibold))
-            Label(
-                "Conversion runs entirely on this Mac. The source PDF and imported images are never uploaded or overwritten.",
-                systemImage: "lock.shield"
-            )
-            .font(.subheadline)
-            .foregroundStyle(.secondary)
-            .fixedSize(horizontal: false, vertical: true)
-        }
+        SheetHeader(
+            title: "Local Conversion",
+            subtitle: "Conversion runs entirely on this Mac. The source PDF and imported images are never uploaded or overwritten.",
+            systemImage: "arrow.triangle.2.circlepath.doc.on.clipboard",
+            tint: .purple
+        )
     }
 
     @ViewBuilder
@@ -129,6 +128,33 @@ struct PDFConversionSheet: View {
                 .accessibilityLabel("Choose images to create a PDF")
             }
             .padding(.top, 18)
+
+        case .office:
+            VStack(alignment: .leading, spacing: 12) {
+                Label("Optional User-Installed LibreOffice", systemImage: "shippingbox.and.arrow.backward")
+                    .font(.headline)
+                Text("PDFViewer does not bundle or download LibreOffice. A dedicated XPC service receives access only to the executable and document you explicitly choose, writes to a fresh temporary directory, and returns a validated PDF.")
+                    .foregroundStyle(.secondary)
+                HStack {
+                    Button(appState.officeConversionManager.executableName == nil
+                           ? "Choose soffice Executable…"
+                           : "Change soffice Executable…") {
+                        appState.officeConversionManager.chooseLibreOfficeExecutable()
+                    }
+                    if appState.officeConversionManager.executableName != nil {
+                        Button("Forget", role: .destructive) {
+                            appState.officeConversionManager.clearExecutable()
+                        }
+                    }
+                }
+                if let name = appState.officeConversionManager.executableName {
+                    Label(name, systemImage: "checkmark.shield")
+                        .foregroundStyle(.secondary)
+                }
+                if let status = appState.officeConversionManager.statusMessage {
+                    Text(status).font(.caption).foregroundStyle(.secondary)
+                }
+            }
         }
     }
 
@@ -178,6 +204,15 @@ struct PDFConversionSheet: View {
 
             case .createPDF:
                 EmptyView()
+            case .office:
+                Button("Choose Office Document…") {
+                    appState.officeConversionManager.convertOfficeDocument()
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(
+                    appState.officeConversionManager.executableName == nil ||
+                    appState.officeConversionManager.isConverting
+                )
             }
         }
     }

@@ -37,7 +37,14 @@ final class RecentDocumentsStore: ObservableObject {
         self.persistence = persistence
         self.bookmarkCoder = bookmarkCoder
         self.limit = limit
-        self.documents = (try? persistence.load()) ?? []
+        let loadedDocuments = (try? persistence.load()) ?? []
+        var seenIdentifiers: Set<String> = []
+        self.documents = Array(
+            loadedDocuments
+                .sorted { $0.lastOpenedAt > $1.lastOpenedAt }
+                .filter { seenIdentifiers.insert($0.id).inserted }
+                .prefix(limit)
+        )
     }
 
     func record(_ url: URL, openedAt date: Date = Date()) throws {
@@ -62,6 +69,38 @@ final class RecentDocumentsStore: ObservableObject {
     func resolve(_ document: RecentDocument) throws -> URL {
         try bookmarkCoder.resolve(document.bookmark)
     }
+
+    func exportJSON() throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        return try encoder.encode(RecentDocumentTransfer(version: 1, documents: documents))
+    }
+
+    func importJSON(_ data: Data) throws {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let transfer = try decoder.decode(RecentDocumentTransfer.self, from: data)
+        guard transfer.version == 1, transfer.documents.count <= 1_000 else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        var merged = Dictionary(uniqueKeysWithValues: documents.map { ($0.id, $0) })
+        for document in transfer.documents where
+            !document.id.isEmpty && document.displayName.count <= 512 && document.bookmark.count <= 1_048_576
+        {
+            if merged[document.id]?.lastOpenedAt ?? .distantPast < document.lastOpenedAt {
+                merged[document.id] = document
+            }
+        }
+        let updated = Array(merged.values.sorted { $0.lastOpenedAt > $1.lastOpenedAt }.prefix(limit))
+        try persistence.save(updated)
+        documents = updated
+    }
+}
+
+private struct RecentDocumentTransfer: Codable {
+    let version: Int
+    let documents: [RecentDocument]
 }
 
 @MainActor

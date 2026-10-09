@@ -48,6 +48,8 @@
 		B20000000000000000000015 /* PDFOCREngineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000015 /* PDFOCREngineTests.swift */; };
 		B20000000000000000000016 /* PDFNativeConversionEngineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000016 /* PDFNativeConversionEngineTests.swift */; };
 		B40000000000000000000001 /* PDFViewerUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F40000000000000000000001 /* PDFViewerUITests.swift */; };
+		B50000000000000000000001 /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = F50000000000000000000001 /* main.swift */; };
+		B50000000000000000000002 /* PDFViewerOfficeConversionHelper.xpc in Embed XPC Services */ = {isa = PBXBuildFile; fileRef = F50000000000000000000004 /* PDFViewerOfficeConversionHelper.xpc */; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -65,7 +67,28 @@
 			remoteGlobalIDString = T10000000000000000000001;
 			remoteInfo = PDFViewer;
 		};
+		C50000000000000000000001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = P000000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = T50000000000000000000001;
+			remoteInfo = PDFViewerOfficeConversionHelper;
+		};
 /* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		K10000000000000000000001 /* Embed XPC Services */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				B50000000000000000000002 /* PDFViewerOfficeConversionHelper.xpc in Embed XPC Services */,
+			);
+			name = "Embed XPC Services";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
 		F10000000000000000000001 /* PDFViewerApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = App/PDFViewerApp.swift; sourceTree = "<group>"; };
@@ -114,6 +137,10 @@
 		F30000000000000000000002 /* PDFViewerTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = PDFViewerTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		F30000000000000000000003 /* PDFViewerUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = PDFViewerUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		F40000000000000000000001 /* PDFViewerUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PDFViewerUITests.swift; sourceTree = "<group>"; };
+		F50000000000000000000001 /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
+		F50000000000000000000002 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		F50000000000000000000003 /* OfficeConversionHelper.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = OfficeConversionHelper.entitlements; sourceTree = "<group>"; };
+		F50000000000000000000004 /* PDFViewerOfficeConversionHelper.xpc */ = {isa = PBXFileReference; explicitFileType = "wrapper.xpc-service"; includeInIndex = 0; path = PDFViewerOfficeConversionHelper.xpc; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -138,6 +165,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		D50000000000000000000001 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -147,6 +181,7 @@
 				G10000000000000000000001 /* PDFViewer */,
 				G20000000000000000000001 /* PDFViewerTests */,
 				G40000000000000000000001 /* PDFViewerUITests */,
+				G50000000000000000000001 /* PDFViewerOfficeConversionHelper */,
 				G30000000000000000000001 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -213,6 +248,7 @@
 				F30000000000000000000001 /* PDFViewer.app */,
 				F30000000000000000000002 /* PDFViewerTests.xctest */,
 				F30000000000000000000003 /* PDFViewerUITests.xctest */,
+				F50000000000000000000004 /* PDFViewerOfficeConversionHelper.xpc */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -225,6 +261,16 @@
 			path = PDFViewerUITests;
 			sourceTree = "<group>";
 		};
+		G50000000000000000000001 /* PDFViewerOfficeConversionHelper */ = {
+			isa = PBXGroup;
+			children = (
+				F50000000000000000000001 /* main.swift */,
+				F50000000000000000000002 /* Info.plist */,
+				F50000000000000000000003 /* OfficeConversionHelper.entitlements */,
+			);
+			path = PDFViewerOfficeConversionHelper;
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -235,10 +281,12 @@
 				S10000000000000000000001 /* Sources */,
 				D10000000000000000000001 /* Frameworks */,
 				R10000000000000000000001 /* Resources */,
+				K10000000000000000000001 /* Embed XPC Services */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				E10000000000000000000001 /* PBXTargetDependency */,
 			);
 			name = PDFViewer;
 			productName = PDFViewer;
@@ -281,6 +329,23 @@
 			productReference = F30000000000000000000003 /* PDFViewerUITests.xctest */;
 			productType = "com.apple.product-type.bundle.ui-testing";
 		};
+		T50000000000000000000001 /* PDFViewerOfficeConversionHelper */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = L50000000000000000000001 /* Build configuration list for PBXNativeTarget "PDFViewerOfficeConversionHelper" */;
+			buildPhases = (
+				S50000000000000000000001 /* Sources */,
+				D50000000000000000000001 /* Frameworks */,
+				R50000000000000000000001 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = PDFViewerOfficeConversionHelper;
+			productName = PDFViewerOfficeConversionHelper;
+			productReference = F50000000000000000000004 /* PDFViewerOfficeConversionHelper.xpc */;
+			productType = "com.apple.product-type.xpc-service";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -302,6 +367,9 @@
 						CreatedOnToolsVersion = 26.6;
 						TestTargetID = T10000000000000000000001;
 					};
+					T50000000000000000000001 = {
+						CreatedOnToolsVersion = 26.6;
+					};
 				};
 			};
 			buildConfigurationList = L00000000000000000000001 /* Build configuration list for PBXProject "PDFViewer" */;
@@ -322,6 +390,7 @@
 				T10000000000000000000001 /* PDFViewer */,
 				T20000000000000000000001 /* PDFViewerTests */,
 				T40000000000000000000001 /* PDFViewerUITests */,
+				T50000000000000000000001 /* PDFViewerOfficeConversionHelper */,
 			);
 		};
 /* End PBXProject section */
@@ -343,6 +412,13 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		R40000000000000000000001 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		R50000000000000000000001 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -413,9 +489,22 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		S50000000000000000000001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B50000000000000000000001 /* main.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
+		E10000000000000000000001 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = T50000000000000000000001 /* PDFViewerOfficeConversionHelper */;
+			targetProxy = C50000000000000000000001 /* PBXContainerItemProxy */;
+		};
 		E20000000000000000000001 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			target = T10000000000000000000001 /* PDFViewer */;
@@ -650,6 +739,48 @@
 			};
 			name = Release;
 		};
+		C500000000000000000000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = PDFViewerOfficeConversionHelper/OfficeConversionHelper.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = PDFViewerOfficeConversionHelper/Info.plist;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 1.0.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.christopherrego.PDFViewer.OfficeConversionHelper;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SKIP_INSTALL = YES;
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Debug;
+		};
+		C500000000000000000000002 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = PDFViewerOfficeConversionHelper/OfficeConversionHelper.entitlements;
+				CODE_SIGN_INJECT_BASE_ENTITLEMENTS = NO;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = PDFViewerOfficeConversionHelper/Info.plist;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 1.0.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.christopherrego.PDFViewer.OfficeConversionHelper;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SKIP_INSTALL = YES;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -685,6 +816,15 @@
 			buildConfigurations = (
 				C400000000000000000000001 /* Debug */,
 				C400000000000000000000002 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		L50000000000000000000001 /* Build configuration list for PBXNativeTarget "PDFViewerOfficeConversionHelper" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				C500000000000000000000001 /* Debug */,
+				C500000000000000000000002 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

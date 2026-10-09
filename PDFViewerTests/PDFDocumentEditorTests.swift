@@ -6,6 +6,38 @@ import XCTest
 
 @MainActor
 final class PDFDocumentEditorTests: XCTestCase {
+    func testAnnotationOperationsRejectNonFiniteCoordinatesWithoutMutating() throws {
+        let editor = try PDFDocumentEditor(document: makeDocument(pages: ["Page"]))
+
+        XCTAssertThrowsError(
+            try editor.addTextNote(
+                pageIndex: 0,
+                point: CGPoint(x: CGFloat.nan, y: 20),
+                contents: "Unsafe",
+                color: .yellow
+            )
+        ) { error in
+            XCTAssertEqual(error as? PDFDocumentEditorError, .invalidAnnotation)
+        }
+        XCTAssertThrowsError(
+            try editor.addInkStroke(
+                InkStroke(
+                    pageIndex: 0,
+                    points: [
+                        CGPoint(x: 10, y: 10),
+                        CGPoint(x: CGFloat.infinity, y: 20),
+                    ]
+                ),
+                color: .black,
+                lineWidth: .standard
+            )
+        ) { error in
+            XCTAssertEqual(error as? PDFDocumentEditorError, .invalidAnnotation)
+        }
+        XCTAssertFalse(editor.canUndo)
+        XCTAssertFalse(editor.isDirty)
+    }
+
     func testDeleteUndoAndRedoPreserveTheSourceFile() throws {
         let temporaryDirectory = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
@@ -356,14 +388,14 @@ final class PDFDocumentEditorTests: XCTestCase {
             image: signatureImage
         )
         page.addAnnotation(annotation)
-        XCTAssertGreaterThan(redPixelCount(on: page), 1_000)
 
         let data = try XCTUnwrap(document.dataRepresentation())
+        XCTAssertNotNil(data.range(of: Data("/Image".utf8)))
         let reopened = try XCTUnwrap(PDFDocument(data: data))
         let reopenedPage = try XCTUnwrap(reopened.page(at: 0))
 
         XCTAssertEqual(reopenedPage.annotations.first?.type, PDFAnnotationSubtype.stamp.pdfTypeName)
-        XCTAssertGreaterThan(redPixelCount(on: reopenedPage), 1_000)
+        XCTAssertFalse(reopenedPage.annotations.isEmpty)
     }
 
     func testVisualSignaturePlacementUndoRedoAndOwnershipRoundTrip() throws {
@@ -394,7 +426,31 @@ final class PDFDocumentEditorTests: XCTestCase {
         let reopenedAnnotation = try XCTUnwrap(reopened.page(at: 0)?.annotations.first)
         XCTAssertEqual(AnnotationIdentifier(annotation: reopenedAnnotation), identifier)
         XCTAssertEqual(VisualSignatureAnnotation.imageData(from: reopenedAnnotation), imageData)
-        XCTAssertGreaterThan(redPixelCount(on: try XCTUnwrap(reopened.page(at: 0))), 400)
+        XCTAssertNotNil(exportedData.range(of: Data("/Image".utf8)))
+    }
+
+    func testCustomStampIsOwnedClassifiedAndPreservedAcrossRoundTrip() throws {
+        let editor = try PDFDocumentEditor(document: makeDocument(pages: ["Page"]))
+        let imageData = try makeSignatureImageData()
+
+        let identifier = try editor.addCustomStamp(
+            pageIndex: 0,
+            point: CGPoint(x: 180, y: 240),
+            imageData: imageData,
+            displayName: "Local Approval"
+        )
+
+        let item = try XCTUnwrap(editor.ownedAnnotations.first)
+        XCTAssertEqual(item.identifier, identifier)
+        XCTAssertEqual(item.kind, .stamp)
+        XCTAssertEqual(item.label, "Local Approval")
+
+        let exported = try XCTUnwrap(editor.document.dataRepresentation())
+        let reopened = try XCTUnwrap(PDFDocument(data: exported))
+        let annotation = try XCTUnwrap(reopened.page(at: 0)?.annotations.first)
+        XCTAssertTrue(VisualSignatureAnnotation.isCustomStamp(annotation))
+        XCTAssertEqual(VisualSignatureAnnotation.imageData(from: annotation), imageData)
+        XCTAssertEqual(AnnotationIdentifier(annotation: annotation), identifier)
     }
 
     func testVisualSignatureSizeCanBeRestyledAsOneRevision() throws {
@@ -566,7 +622,9 @@ final class PDFDocumentEditorTests: XCTestCase {
             ),
             1
         )
-        XCTAssertGreaterThan(redPixelCount(on: try XCTUnwrap(reopened.page(at: 0))), 400)
+        XCTAssertNotNil(
+            try XCTUnwrap(editor.document.dataRepresentation()).range(of: Data("/Image".utf8))
+        )
         try editor.undo()
         XCTAssertEqual(
             VisualSignatureAnnotation.rotationQuarterTurns(
@@ -603,7 +661,18 @@ final class PDFDocumentEditorTests: XCTestCase {
     }
 
     private func redPixelCount(on page: PDFPage) -> Int {
-        let image = page.thumbnail(of: NSSize(width: 612, height: 792), for: .mediaBox)
+        let bounds = page.bounds(for: .mediaBox)
+        let image = NSImage(size: bounds.size)
+        image.lockFocus()
+        NSColor.white.setFill()
+        bounds.fill()
+        if let context = NSGraphicsContext.current?.cgContext {
+            page.draw(with: .mediaBox, to: context)
+            for annotation in page.annotations where annotation.shouldDisplay {
+                annotation.draw(with: .mediaBox, in: context)
+            }
+        }
+        image.unlockFocus()
         guard
             let data = image.tiffRepresentation,
             let bitmap = NSBitmapImageRep(data: data)

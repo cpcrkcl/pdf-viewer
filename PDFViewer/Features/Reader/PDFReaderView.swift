@@ -272,6 +272,11 @@ struct PDFReaderView: NSViewRepresentable {
                     name: .PDFViewPageChanged,
                     object: observedPDFView
                 )
+                NotificationCenter.default.removeObserver(
+                    self,
+                    name: .PDFViewSelectionChanged,
+                    object: observedPDFView
+                )
             }
 
             observedPDFView = pdfView
@@ -415,6 +420,8 @@ final class ReaderSplitView: NSSplitView, NSSplitViewDelegate {
                     model: sidebarPresentation,
                     thumbnailView: thumbnailView
                 )
+                .tint(CatppuccinMocha.mauve)
+                .preferredColorScheme(.dark)
             )
         )
         super.init(frame: frameRect)
@@ -422,6 +429,11 @@ final class ReaderSplitView: NSSplitView, NSSplitViewDelegate {
         wantsLayer = true
         pdfView.wantsLayer = true
         sidebarHostingView.wantsLayer = true
+        // PDFView itself remains in Aqua to avoid PDFKit's dark-mode page
+        // rendering artifacts, while the surrounding sidebar follows the
+        // application's Mocha chrome with correctly contrasted controls.
+        sidebarHostingView.appearance = NSAppearance(named: .darkAqua)
+        thumbnailView.appearance = NSAppearance(named: .darkAqua)
         liveResizeSnapshotLayer.actions = [
             "bounds": NSNull(),
             "contents": NSNull(),
@@ -892,6 +904,7 @@ final class ReaderSidebarPresentation: ObservableObject {
     @Published private(set) var availablePageIDs: Set<WorkingPageID> = []
 
     private var onTabChange: (ReaderSidebarTab) -> Void = { _ in }
+    private var updateGeneration = 0
     var onOutlineNavigation: (WorkingPageID) -> Void = { _ in }
     var onBookmarkNavigation: (PageBookmark) -> Void = { _ in }
     var onAddBookmark: () -> Void = {}
@@ -924,11 +937,14 @@ final class ReaderSidebarPresentation: ObservableObject {
             return
         }
 
+        updateGeneration += 1
+        let generation = updateGeneration
+
         // NSViewRepresentable updates run while SwiftUI is rendering. Defer
         // published presentation changes until that render transaction ends.
         Task { @MainActor [weak self] in
             await Task.yield()
-            guard let self else {
+            guard let self, self.updateGeneration == generation else {
                 return
             }
             if self.selectedTab != selectedTab {
@@ -996,7 +1012,7 @@ private struct ReaderSidebarContent: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(.background)
+        .background(CatppuccinMocha.mantle)
     }
 
     @ViewBuilder
@@ -1312,6 +1328,8 @@ final class InteractivePDFView: PDFView {
         switch annotationTool {
         case .freehand, .textNote, .rectangle, .oval, .line, .arrow, .stamp, .signature:
             addCursorRect(bounds, cursor: .crosshair)
+        case .eraser:
+            addCursorRect(bounds, cursor: .pointingHand)
         default:
             break
         }
@@ -1331,6 +1349,9 @@ final class InteractivePDFView: PDFView {
         switch annotationTool {
         case .freehand:
             beginInk(at: viewPoint)
+        case .eraser:
+            let selection = annotationSelection(at: viewPoint)
+            onAnnotationSelection?(selection?.kind == .freehand && selection?.isOwnedByPDFViewer == true ? selection : nil)
         case .textNote:
             guard let placement = annotationPlacement(at: viewPoint) else {
                 return
@@ -1349,6 +1370,7 @@ final class InteractivePDFView: PDFView {
             }
             onVisualSignaturePlacement?(placement)
         case .select:
+            window?.makeFirstResponder(self)
             selectMouseDownPoint = viewPoint
             pendingClickedAnnotation = annotationSelection(at: viewPoint)
             selectPageStartPoint = annotationPlacement(at: viewPoint)
@@ -1446,6 +1468,14 @@ final class InteractivePDFView: PDFView {
                 }
                 self?.onTextSelectionCommitted?()
             }
+            return
+        }
+        if
+            annotationTool == .eraser ||
+            annotationTool == .textNote ||
+            annotationTool == .stamp ||
+            annotationTool == .signature
+        {
             return
         }
 
@@ -1616,6 +1646,7 @@ final class InteractivePDFView: PDFView {
             let pageIndex = inkPageIndex,
             let document,
             let page = document.page(at: pageIndex),
+            self.page(for: viewPoint, nearest: false) === page,
             let lastViewPoint = inkViewPoints.last,
             hypot(viewPoint.x - lastViewPoint.x, viewPoint.y - lastViewPoint.y) >= 2
         else {
@@ -1805,7 +1836,8 @@ final class InteractivePDFView: PDFView {
             return annotation.endLineStyle == .closedArrow ? .arrow : .line
         }
         if annotation.type == PDFAnnotationSubtype.stamp.pdfTypeName {
-            return VisualSignatureAnnotation.imageData(from: annotation) == nil ? .stamp : .signature
+            return VisualSignatureAnnotation.imageData(from: annotation) == nil ||
+                VisualSignatureAnnotation.isCustomStamp(annotation) ? .stamp : .signature
         }
         return nil
     }
@@ -1964,7 +1996,7 @@ private extension ReaderTheme {
         case .day:
             NSColor(calibratedWhite: 0.82, alpha: 1)
         case .night:
-            NSColor(calibratedWhite: 0.055, alpha: 1)
+            NSColor(calibratedRed: 30 / 255, green: 30 / 255, blue: 46 / 255, alpha: 1)
         case .sepia:
             NSColor(calibratedRed: 0.70, green: 0.63, blue: 0.49, alpha: 1)
         }
@@ -1975,7 +2007,7 @@ private extension ReaderTheme {
         case .day:
             NSColor(calibratedWhite: 0.92, alpha: 1)
         case .night:
-            NSColor(calibratedWhite: 0.11, alpha: 1)
+            NSColor(calibratedRed: 24 / 255, green: 24 / 255, blue: 37 / 255, alpha: 1)
         case .sepia:
             NSColor(calibratedRed: 0.86, green: 0.80, blue: 0.68, alpha: 1)
         }

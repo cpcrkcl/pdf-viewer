@@ -184,9 +184,15 @@ struct PendingPDFImport: Identifiable {
 }
 
 @MainActor
+struct PendingPDFComparison: Identifiable {
+    let id = UUID()
+    let document: PDFDocument
+    let displayName: String
+}
+
+@MainActor
 final class AppState: ObservableObject {
     @Published private(set) var session: DocumentSession?
-    @Published var isFileImporterPresented = false
     @Published var isPageOrganizerPresented = false
     @Published var presentedError: PresentedError?
     @Published var pendingPageDeletion: PendingPageDeletion?
@@ -200,10 +206,12 @@ final class AppState: ObservableObject {
     @Published var pendingUnsavedChanges: PendingUnsavedChanges?
     @Published var exportReceipt: ExportReceipt?
     @Published var isSignatureLibraryPresented = false
+    @Published var isStampLibraryPresented = false
     @Published var isFormEditorPresented = false
     @Published var isLocalProcessingPresented = false
     @Published var isConversionPresented = false
-    @Published var isImageImporterPresented = false
+    @Published var pendingPDFComparison: PendingPDFComparison?
+    private var comparisonLoadingGeneration = UUID()
     @Published private(set) var isLocalProcessing = false
     @Published private(set) var isLoadingDocument = false
     @Published private(set) var localProcessingProgress: PDFOCRProgress?
@@ -217,7 +225,9 @@ final class AppState: ObservableObject {
     let bookmarkStore: PageBookmarkStore
     let navigationHistory: NavigationHistory
     let signatureLibrary: SignatureLibrary
+    let stampLibrary: SignatureLibrary
     let redactionState: RedactionState
+    let officeConversionManager: OfficeConversionManager
 
     private let documentLoader: DocumentLoader
     private let pdfExporter: any PDFExporting
@@ -280,7 +290,9 @@ final class AppState: ObservableObject {
         bookmarkStore: PageBookmarkStore = PageBookmarkStore(),
         navigationHistory: NavigationHistory = NavigationHistory(),
         signatureLibrary: SignatureLibrary = SignatureLibrary(),
+        stampLibrary: SignatureLibrary = SignatureLibrary(libraryFolder: "Stamps"),
         redactionState: RedactionState = RedactionState(),
+        officeConversionManager: OfficeConversionManager = OfficeConversionManager(),
         pdfExporter: any PDFExporting = PDFExporter(),
         loadDocumentsAsynchronously: Bool = true
     ) {
@@ -292,7 +304,9 @@ final class AppState: ObservableObject {
         self.bookmarkStore = bookmarkStore
         self.navigationHistory = navigationHistory
         self.signatureLibrary = signatureLibrary
+        self.stampLibrary = stampLibrary
         self.redactionState = redactionState
+        self.officeConversionManager = officeConversionManager
         self.pdfExporter = pdfExporter
         self.loadDocumentsAsynchronously = loadDocumentsAsynchronously
 
@@ -326,11 +340,36 @@ final class AppState: ObservableObject {
                 self?.objectWillChange.send()
             }
             .store(in: &childObservations)
+        stampLibrary.objectWillChange
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &childObservations)
         redactionState.objectWillChange
             .sink { [weak self] _ in
                 self?.objectWillChange.send()
             }
             .store(in: &childObservations)
+        officeConversionManager.objectWillChange
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &childObservations)
+    }
+
+    func presentOpenPDFPanel() {
+        presentOpenPanel(
+            title: "Open PDF",
+            allowedContentTypes: [.pdf],
+            allowsMultipleSelection: false,
+            handle: handleFileImport
+        )
+    }
+
+    func presentComparePDFPanel() {
+        presentOpenPanel(
+            title: "Compare PDF",
+            message: "Choose a second PDF to compare with the open document.",
+            allowedContentTypes: [.pdf],
+            allowsMultipleSelection: false,
+            handle: handleCompareImport
+        )
     }
 
     func handleFileImport(_ result: Result<[URL], any Error>) {
@@ -346,6 +385,47 @@ final class AppState: ObservableObject {
                 && nsError.code == NSUserCancelledError
             if !isUserCancellation {
                 present(error, title: "Could Not Choose PDF")
+            }
+        }
+    }
+
+    func handleCompareImport(_ result: Result<[URL], any Error>) {
+        guard case .success(let urls) = result, let url = urls.first else { return }
+        let generation = UUID()
+        comparisonLoadingGeneration = generation
+        let primaryDocument = session?.document
+        Task { [weak self] in
+            do {
+                let data = try await Task.detached(priority: .userInitiated) {
+                    let accessed = url.startAccessingSecurityScopedResource()
+                    defer { if accessed { url.stopAccessingSecurityScopedResource() } }
+                    let values = try url.resourceValues(forKeys: [
+                        .fileSizeKey, .isRegularFileKey, .isSymbolicLinkKey,
+                    ])
+                    guard
+                        url.pathExtension.caseInsensitiveCompare("pdf") == .orderedSame,
+                        values.isRegularFile == true,
+                        values.isSymbolicLink != true,
+                        let size = values.fileSize,
+                        size > 4,
+                        size <= 1_073_741_824
+                    else { throw DocumentLoadingError.fileUnavailable }
+                    return try Data(contentsOf: url, options: .mappedIfSafe)
+                }.value
+                guard
+                    let self,
+                    self.comparisonLoadingGeneration == generation,
+                    self.session?.document === primaryDocument,
+                    let document = PDFDocument(data: data),
+                    document.pageCount > 0
+                else { return }
+                self.pendingPDFComparison = PendingPDFComparison(
+                    document: document,
+                    displayName: url.lastPathComponent
+                )
+            } catch {
+                guard let self, self.comparisonLoadingGeneration == generation else { return }
+                self.present(error, title: "Could Not Open Comparison PDF")
             }
         }
     }
@@ -485,9 +565,11 @@ final class AppState: ObservableObject {
         pendingEncryptedExport = nil
         pendingBookmarkRename = nil
         isSignatureLibraryPresented = false
+        isStampLibraryPresented = false
+        pendingPDFComparison = nil
+        comparisonLoadingGeneration = UUID()
         isFormEditorPresented = false
         isConversionPresented = false
-        isImageImporterPresented = false
         annotationState.reset()
         redactionState.end()
         readerState.reset(pageCount: newSession.document.pageCount)
@@ -585,9 +667,11 @@ final class AppState: ObservableObject {
         pendingEncryptedExport = nil
         pendingBookmarkRename = nil
         isSignatureLibraryPresented = false
+        isStampLibraryPresented = false
+        pendingPDFComparison = nil
+        comparisonLoadingGeneration = UUID()
         isFormEditorPresented = false
         isConversionPresented = false
-        isImageImporterPresented = false
         annotationState.reset()
         redactionState.end()
         editorObservation = nil
@@ -854,8 +938,117 @@ final class AppState: ObservableObject {
         searchController.startSearch(for: query, in: document)
     }
 
+    func updateSearchOptions(caseSensitive: Bool, wholeWords: Bool) {
+        searchController.options = PDFSearchOptions(
+            isCaseSensitive: caseSensitive,
+            matchesWholeWords: wholeWords
+        )
+        if !searchController.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            startSearch(for: searchController.query)
+        }
+    }
+
+    func selectSearchResult(at index: Int) {
+        searchController.selectMatch(at: index)
+    }
+
+    func markSearchMatchesForRedaction(_ indexes: Set<Int>) {
+        guard
+            requireRedactionPermission(),
+            let document = session?.editor.document,
+            !indexes.isEmpty
+        else { return }
+
+        let regions = searchController.redactionRegions(
+            forMatchIndexes: indexes,
+            in: document
+        )
+        guard !regions.isEmpty else {
+            present(PDFRedactionError.noRegions, title: "No Search Matches Selected")
+            return
+        }
+
+        annotationState.end()
+        pendingTextNote = nil
+        isPageOrganizerPresented = false
+        isFormEditorPresented = false
+        if !redactionState.isActive { redactionState.begin() }
+
+        let existing = Set(redactionState.regions.map {
+            "\($0.pageIndex):\($0.bounds.integral.debugDescription)"
+        })
+        var inserted = existing
+        for region in regions where inserted.count < 500 {
+            let key = "\(region.pageIndex):\(region.bounds.integral.debugDescription)"
+            guard inserted.insert(key).inserted else { continue }
+            redactionState.add(region)
+        }
+        if let first = regions.first {
+            navigateToPage(number: first.pageIndex + 1)
+        }
+    }
+
     func clearSearch() {
         searchController.clear()
+    }
+
+    func exportBookmarksJSON() { exportLibraryJSON(
+        data: { try bookmarkStore.exportJSON() },
+        suggestedName: "PDFViewer Bookmarks.json",
+        title: "Export Bookmarks"
+    ) }
+
+    func exportRecentDocumentsJSON() { exportLibraryJSON(
+        data: { try recentDocuments.exportJSON() },
+        suggestedName: "PDFViewer Recent Documents.json",
+        title: "Export Recent Documents"
+    ) }
+
+    func importBookmarksJSON() { importLibraryJSON(title: "Import Bookmarks") { [bookmarkStore] data in
+        try bookmarkStore.importJSON(data)
+    } }
+
+    func importRecentDocumentsJSON() { importLibraryJSON(title: "Import Recent Documents") { [recentDocuments] data in
+        try recentDocuments.importJSON(data)
+    } }
+
+    private func exportLibraryJSON(
+        data: () throws -> Data,
+        suggestedName: String,
+        title: String
+    ) {
+        do {
+            let output = try data()
+            let panel = NSSavePanel()
+            panel.title = title
+            panel.allowedContentTypes = [.json]
+            panel.nameFieldStringValue = suggestedName
+            panel.begin { [weak self] response in
+                guard response == .OK, let url = panel.url else { return }
+                do { try output.write(to: url, options: .atomic) }
+                catch { self?.present(error, title: "Could Not Export JSON") }
+            }
+        } catch { present(error, title: "Could Not Prepare JSON") }
+    }
+
+    private func importLibraryJSON(
+        title: String,
+        apply: @escaping @MainActor (Data) throws -> Void
+    ) {
+        let panel = NSOpenPanel()
+        panel.title = title
+        panel.allowedContentTypes = [.json]
+        panel.allowsMultipleSelection = false
+        panel.begin { [weak self] response in
+            guard response == .OK, let url = panel.url else { return }
+            do {
+                let values = try url.resourceValues(forKeys: [.fileSizeKey])
+                guard (values.fileSize ?? 0) <= 10 * 1_024 * 1_024 else {
+                    throw CocoaError(.fileReadTooLarge)
+                }
+                try apply(Data(contentsOf: url))
+            } catch { self?.present(error, title: "Could Not Import JSON") }
+        }
     }
 
     func selectPageIndexes(_ indexes: Set<Int>) {
@@ -1002,6 +1195,8 @@ final class AppState: ObservableObject {
         addsSearchableText: Bool,
         enhancement: PDFScanEnhancementPreset,
         rasterQuality: PDFOCRRasterQuality = .balanced,
+        language: PDFOCRLanguage = .automatic,
+        minimumConfidence: Float = 0,
         cropMarginsPercent: Double = 0,
         splitDoublePages: Bool = false
     ) {
@@ -1016,6 +1211,7 @@ final class AppState: ObservableObject {
 
         let editor = session.editor
         let sourceDocument = editor.document
+        let sourceRevisionData = editor.currentRevision.pdfData
         let generation = UUID()
         localProcessingGeneration = generation
         localProcessingProgress = PDFOCRProgress(
@@ -1032,6 +1228,8 @@ final class AppState: ObservableObject {
                     addsSearchableText: addsSearchableText,
                     enhancement: enhancement,
                     rasterQuality: rasterQuality,
+                    language: language,
+                    minimumConfidence: minimumConfidence,
                     cropMarginsPercent: cropMarginsPercent,
                     splitDoublePages: splitDoublePages
                 ) { [weak self] progress in
@@ -1045,9 +1243,10 @@ final class AppState: ObservableObject {
                     let self,
                     self.localProcessingGeneration == generation,
                     let editor,
-                    self.session?.editor === editor
+                    self.session?.editor === editor,
+                    editor.currentRevision.pdfData == sourceRevisionData
                 else {
-                    return
+                    throw PDFOCRError.documentChangedDuringProcessing
                 }
 
                 try editor.applyProcessedDocument(
@@ -1112,7 +1311,13 @@ final class AppState: ObservableObject {
 
     func chooseImagesForPDFCreation() {
         isConversionPresented = false
-        isImageImporterPresented = true
+        presentOpenPanel(
+            title: "Choose Images",
+            message: "Choose up to 500 PNG, JPEG, HEIC, or TIFF images. Selection order becomes the PDF page order.",
+            allowedContentTypes: [.image],
+            allowsMultipleSelection: true,
+            handle: handleImageImport
+        )
     }
 
     func handleImageImport(_ result: Result<[URL], any Error>) {
@@ -1122,12 +1327,25 @@ final class AppState: ObservableObject {
                 return
             }
             do {
+                guard urls.count <= PDFNativeConversionEngine.maximumImageCount else {
+                    throw PDFNativeConversionError.tooManyImages
+                }
                 let inputs = try urls.map { url in
                     let didAccess = url.startAccessingSecurityScopedResource()
                     defer {
                         if didAccess {
                             url.stopAccessingSecurityScopedResource()
                         }
+                    }
+                    guard url.isFileURL else {
+                        throw PDFNativeConversionError.invalidImage(url.lastPathComponent)
+                    }
+                    let fileSize = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize
+                    guard
+                        let fileSize,
+                        fileSize <= PDFNativeConversionEngine.maximumInputImageBytes
+                    else {
+                        throw PDFNativeConversionError.imageTooLarge(url.lastPathComponent)
                     }
                     return PDFImageInput(
                         filename: url.lastPathComponent,
@@ -1325,6 +1543,16 @@ final class AppState: ObservableObject {
     }
 
     func selectAnnotation(_ selection: SelectedAnnotation?) {
+        if
+            annotationState.isActive,
+            annotationState.selectedTool == .eraser,
+            let selection,
+            selection.kind == .freehand,
+            selection.isOwnedByPDFViewer
+        {
+            deleteAnnotation(selection)
+            return
+        }
         annotationState.selectAnnotation(selection)
         guard let selection, !selection.isOwnedByPDFViewer else {
             return
@@ -1335,6 +1563,48 @@ final class AppState: ObservableObject {
         )
     }
 
+    func navigateToOwnedAnnotation(_ item: OwnedAnnotationItem) {
+        navigateToPage(number: item.pageNumber)
+        if !annotationState.isActive { annotationState.begin() }
+        annotationState.selectedTool = .select
+        annotationState.selectAnnotation(
+            SelectedAnnotation(
+                pageIndex: item.pageIndex,
+                identifier: item.identifier,
+                kind: item.kind
+            )
+        )
+    }
+
+    func navigateToFormField(_ field: PDFFormField) {
+        navigateToPage(number: field.pageIndex + 1)
+    }
+
+    func deleteOwnedAnnotation(_ item: OwnedAnnotationItem) {
+        deleteAnnotation(
+            SelectedAnnotation(
+                pageIndex: item.pageIndex,
+                identifier: item.identifier,
+                kind: item.kind
+            )
+        )
+    }
+
+    private func deleteAnnotation(_ selection: SelectedAnnotation) {
+        guard
+            requireCommentingPermission(),
+            let editor = session?.editor,
+            let identifier = selection.identifier
+        else { return }
+        do {
+            try editor.deleteAnnotation(pageIndex: selection.pageIndex, identifier: identifier)
+            synchronizeAfterDocumentMutation()
+            annotationState.clearTransientSelection()
+        } catch {
+            present(error, title: "Could Not Delete Annotation")
+        }
+    }
+
     func addInkStroke(_ stroke: InkStroke) {
         guard requireCommentingPermission() else {
             return
@@ -1342,7 +1612,7 @@ final class AppState: ObservableObject {
         performAnnotationOperation { editor in
             try editor.addInkStroke(
                 stroke,
-                color: annotationState.selectedColor,
+                customColor: annotationState.effectiveColor,
                 lineWidth: annotationState.selectedLineWidth
             )
         }
@@ -1360,7 +1630,7 @@ final class AppState: ObservableObject {
             let identifier = try editor.addShapeAnnotation(
                 kind: kind,
                 placement: placement,
-                color: annotationState.selectedColor,
+                customColor: annotationState.effectiveColor,
                 lineWidth: annotationState.selectedLineWidth
             )
             synchronizeAfterDocumentMutation()
@@ -1382,11 +1652,24 @@ final class AppState: ObservableObject {
             return
         }
         do {
-            let identifier = try editor.addBuiltInStamp(
-                pageIndex: placement.pageIndex,
-                point: placement.point,
-                preset: annotationState.selectedStamp
-            )
+            let identifier: AnnotationIdentifier
+            if
+                let stampID = annotationState.selectedCustomStampID,
+                let stamp = stampLibrary.signatures.first(where: { $0.id == stampID })
+            {
+                identifier = try editor.addCustomStamp(
+                    pageIndex: placement.pageIndex,
+                    point: placement.point,
+                    imageData: stampLibrary.imageData(for: stampID),
+                    displayName: stamp.displayName
+                )
+            } else {
+                identifier = try editor.addBuiltInStamp(
+                    pageIndex: placement.pageIndex,
+                    point: placement.point,
+                    preset: annotationState.selectedStamp
+                )
+            }
             synchronizeAfterDocumentMutation()
             annotationState.selectAnnotation(
                 SelectedAnnotation(
@@ -1403,6 +1686,37 @@ final class AppState: ObservableObject {
 
     func setStampPreset(_ preset: StampPreset) {
         annotationState.selectedStamp = preset
+        annotationState.selectedCustomStampID = nil
+    }
+
+    func presentStampLibrary() { isStampLibraryPresented = true }
+
+    func chooseCustomStamp(_ stamp: StoredSignature) {
+        annotationState.selectedCustomStampID = stamp.id
+        annotationState.selectedTool = .stamp
+        isStampLibraryPresented = false
+    }
+
+    func importCustomStamp(at url: URL) {
+        let accessed = url.startAccessingSecurityScopedResource()
+        defer { if accessed { url.stopAccessingSecurityScopedResource() } }
+        do {
+            let data = try Data(contentsOf: url)
+            let stamp = try stampLibrary.importImage(
+                data: data,
+                displayName: url.deletingPathExtension().lastPathComponent
+            )
+            chooseCustomStamp(stamp)
+        } catch { present(error, title: "Could Not Import Stamp") }
+    }
+
+    func deleteCustomStamp(_ stamp: StoredSignature) {
+        do {
+            try stampLibrary.delete(stamp.id)
+            if annotationState.selectedCustomStampID == stamp.id {
+                annotationState.selectedCustomStampID = nil
+            }
+        } catch { present(error, title: "Could Not Delete Stamp") }
     }
 
     func moveAnnotation(_ selection: SelectedAnnotation, by translation: CGSize) {
@@ -1501,6 +1815,23 @@ final class AppState: ObservableObject {
         }
     }
 
+    func handleVisualSignatureImport(_ result: Result<[URL], any Error>) {
+        switch result {
+        case .success(let urls):
+            guard let url = urls.first else {
+                return
+            }
+            importVisualSignature(at: url)
+        case .failure(let error):
+            let nsError = error as NSError
+            let isUserCancellation = nsError.domain == NSCocoaErrorDomain
+                && nsError.code == NSUserCancelledError
+            if !isUserCancellation {
+                present(error, title: "Could Not Choose Visual Signature")
+            }
+        }
+    }
+
     func importVisualSignature(at url: URL) {
         let hasScopedAccess = url.startAccessingSecurityScopedResource()
         defer {
@@ -1511,6 +1842,13 @@ final class AppState: ObservableObject {
         do {
             guard url.isFileURL else {
                 throw SignatureLibraryError.invalidImage
+            }
+            let fileSize = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize
+            guard
+                let fileSize,
+                fileSize <= SignatureLibrary.maximumImageBytes
+            else {
+                throw SignatureLibraryError.imageTooLarge
             }
             let data = try Data(contentsOf: url)
             importVisualSignature(
@@ -1652,8 +1990,9 @@ final class AppState: ObservableObject {
         }
         self.pendingTextNote = nil
 
-        let trimmedContents = String(contents.prefix(10_000))
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedContents = String(
+            contents.trimmingCharacters(in: .whitespacesAndNewlines).prefix(10_000)
+        )
         guard !trimmedContents.isEmpty else {
             return
         }
@@ -1671,7 +2010,7 @@ final class AppState: ObservableObject {
                     pageIndex: pendingTextNote.pageIndex,
                     point: point,
                     contents: trimmedContents,
-                    color: annotationState.selectedColor
+                    customColor: annotationState.effectiveColor
                 )
                 synchronizeAfterDocumentMutation()
                 annotationState.selectAnnotation(
@@ -1694,6 +2033,7 @@ final class AppState: ObservableObject {
 
     func setAnnotationColor(_ color: AnnotationPaletteColor) {
         annotationState.selectedColor = color
+        annotationState.customColor = nil
         guard requireCommentingPermission() else {
             return
         }
@@ -1715,6 +2055,24 @@ final class AppState: ObservableObject {
         } catch {
             present(error, title: "Could Not Restyle Annotation")
         }
+    }
+
+    func setCustomAnnotationColor(_ color: NSColor) {
+        annotationState.customColor = color.usingColorSpace(.deviceRGB) ?? color
+        guard
+            requireCommentingPermission(),
+            let editor = session?.editor,
+            let selection = annotationState.selectedAnnotation,
+            let identifier = selection.identifier
+        else { return }
+        do {
+            try editor.updateAnnotationColor(
+                pageIndex: selection.pageIndex,
+                identifier: identifier,
+                customColor: annotationState.effectiveColor
+            )
+            synchronizeAfterDocumentMutation()
+        } catch { present(error, title: "Could Not Restyle Annotation") }
     }
 
     func setAnnotationLineWidth(_ lineWidth: AnnotationLineWidth) {
@@ -1776,7 +2134,7 @@ final class AppState: ObservableObject {
             kind = .underline
         case .strikethrough:
             kind = .strikethrough
-        case .select, .freehand, .textNote, .rectangle, .oval, .line, .arrow, .stamp, .signature:
+        case .select, .freehand, .eraser, .textNote, .rectangle, .oval, .line, .arrow, .stamp, .signature:
             return
         }
 
@@ -1788,7 +2146,7 @@ final class AppState: ObservableObject {
             try editor.addTextMarkup(
                 kind: kind,
                 regions: regions,
-                color: annotationState.selectedColor
+                customColor: annotationState.effectiveColor
             )
         }
         annotationState.clearTransientSelection()
@@ -2123,6 +2481,33 @@ final class AppState: ObservableObject {
             kind: .workingCopy,
             continuation: continuation
         )
+    }
+
+    private func presentOpenPanel(
+        title: String,
+        message: String? = nil,
+        allowedContentTypes: [UTType],
+        allowsMultipleSelection: Bool,
+        handle: @escaping @MainActor (Result<[URL], any Error>) -> Void
+    ) {
+        let panel = NSOpenPanel()
+        panel.title = title
+        if let message {
+            panel.message = message
+        }
+        panel.allowedContentTypes = allowedContentTypes
+        panel.allowsMultipleSelection = allowsMultipleSelection
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.begin { response in
+            guard response == .OK else {
+                return
+            }
+            let urls = panel.urls
+            Task { @MainActor in
+                handle(.success(urls))
+            }
+        }
     }
 
     private func choosePDFForImport(purpose: PDFImportPurpose) {

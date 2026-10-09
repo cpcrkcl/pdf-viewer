@@ -272,7 +272,7 @@ final class PDFDocumentEditor: ObservableObject {
     func addTextMarkup(
         kind: TextMarkupKind,
         regions: [TextMarkupRegion],
-        color: AnnotationPaletteColor
+        customColor color: NSColor
     ) throws {
         guard !regions.isEmpty else {
             throw PDFDocumentEditorError.invalidAnnotation
@@ -282,6 +282,7 @@ final class PDFDocumentEditor: ObservableObject {
             for region in regions {
                 guard
                     (0..<candidate.pageCount).contains(region.pageIndex),
+                    Self.isFinite(region.bounds),
                     !region.bounds.isEmpty,
                     !region.bounds.isNull,
                     let page = candidate.page(at: region.pageIndex)
@@ -306,21 +307,26 @@ final class PDFDocumentEditor: ObservableObject {
                 )
                 Self.configureOwnedAnnotation(
                     annotation,
-                    color: color.color.withAlphaComponent(kind == .highlight ? 0.35 : 0.9)
+                    color: color.withAlphaComponent(kind == .highlight ? 0.35 : 0.9)
                 )
                 page.addAnnotation(annotation)
             }
         }
     }
 
+    func addTextMarkup(kind: TextMarkupKind, regions: [TextMarkupRegion], color: AnnotationPaletteColor) throws {
+        try addTextMarkup(kind: kind, regions: regions, customColor: color.color)
+    }
+
     func addInkStroke(
         _ stroke: InkStroke,
-        color: AnnotationPaletteColor,
+        customColor color: NSColor,
         lineWidth: AnnotationLineWidth
     ) throws {
         guard
             stroke.points.count >= 2,
-            (0..<document.pageCount).contains(stroke.pageIndex)
+            (0..<document.pageCount).contains(stroke.pageIndex),
+            stroke.points.allSatisfy(Self.isFinite)
         else {
             throw PDFDocumentEditorError.invalidAnnotation
         }
@@ -344,7 +350,7 @@ final class PDFDocumentEditor: ObservableObject {
             let border = PDFBorder()
             border.lineWidth = lineWidth.points
             annotation.border = border
-            Self.configureOwnedAnnotation(annotation, color: color.color)
+            Self.configureOwnedAnnotation(annotation, color: color)
 
             let path = NSBezierPath()
             if let firstPoint = stroke.points.first {
@@ -368,14 +374,22 @@ final class PDFDocumentEditor: ObservableObject {
         }
     }
 
+    func addInkStroke(_ stroke: InkStroke, color: AnnotationPaletteColor, lineWidth: AnnotationLineWidth) throws {
+        try addInkStroke(stroke, customColor: color.color, lineWidth: lineWidth)
+    }
+
     @discardableResult
     func addShapeAnnotation(
         kind: ShapeAnnotationKind,
         placement: ShapeAnnotationPlacement,
-        color: AnnotationPaletteColor,
+        customColor color: NSColor,
         lineWidth: AnnotationLineWidth
     ) throws -> AnnotationIdentifier {
-        guard (0..<document.pageCount).contains(placement.pageIndex) else {
+        guard
+            (0..<document.pageCount).contains(placement.pageIndex),
+            Self.isFinite(placement.startPoint),
+            Self.isFinite(placement.endPoint)
+        else {
             throw PDFDocumentEditorError.invalidAnnotation
         }
         let isLine = kind == .line || kind == .arrow
@@ -417,10 +431,19 @@ final class PDFDocumentEditor: ObservableObject {
                 annotation.startLineStyle = .none
                 annotation.endLineStyle = kind == .arrow ? .closedArrow : .none
             }
-            Self.configureOwnedAnnotation(annotation, identifier: identifier, color: color.color)
+            Self.configureOwnedAnnotation(annotation, identifier: identifier, color: color)
             page.addAnnotation(annotation)
         }
         return identifier
+    }
+
+    func addShapeAnnotation(
+        kind: ShapeAnnotationKind,
+        placement: ShapeAnnotationPlacement,
+        color: AnnotationPaletteColor,
+        lineWidth: AnnotationLineWidth
+    ) throws -> AnnotationIdentifier {
+        try addShapeAnnotation(kind: kind, placement: placement, customColor: color.color, lineWidth: lineWidth)
     }
 
     @discardableResult
@@ -429,7 +452,10 @@ final class PDFDocumentEditor: ObservableObject {
         point: CGPoint,
         preset: StampPreset
     ) throws -> AnnotationIdentifier {
-        guard (0..<document.pageCount).contains(pageIndex) else {
+        guard
+            (0..<document.pageCount).contains(pageIndex),
+            Self.isFinite(point)
+        else {
             throw PDFDocumentEditorError.invalidAnnotation
         }
         let identifier = AnnotationIdentifier()
@@ -451,16 +477,57 @@ final class PDFDocumentEditor: ObservableObject {
     }
 
     @discardableResult
+    func addCustomStamp(
+        pageIndex: Int,
+        point: CGPoint,
+        imageData: Data,
+        displayName: String
+    ) throws -> AnnotationIdentifier {
+        guard
+            (0..<document.pageCount).contains(pageIndex),
+            Self.isFinite(point),
+            let image = NSImage(data: imageData),
+            image.size.width > 0,
+            image.size.height > 0
+        else { throw PDFDocumentEditorError.invalidAnnotation }
+
+        let identifier = AnnotationIdentifier()
+        try mutateAnnotation { candidate in
+            guard let page = candidate.page(at: pageIndex) else {
+                throw PDFDocumentEditorError.invalidAnnotation
+            }
+            let bounds = Self.visualSignatureBounds(
+                centeredAt: point,
+                aspectRatio: image.size.width / image.size.height,
+                size: .medium,
+                pageBounds: page.bounds(for: .cropBox)
+            )
+            let annotation = try VisualSignatureAnnotation(
+                bounds: bounds,
+                imageData: imageData,
+                isCustomStamp: true
+            )
+            annotation.contents = String(displayName.prefix(120))
+            Self.configureOwnedAnnotation(annotation, identifier: identifier, color: .clear)
+            page.addAnnotation(annotation)
+        }
+        return identifier
+    }
+
+    @discardableResult
     func addTextNote(
         pageIndex: Int,
         point: CGPoint,
         contents: String,
-        color: AnnotationPaletteColor
+        customColor color: NSColor
     ) throws -> AnnotationIdentifier {
-        let trimmedContents = String(contents.prefix(10_000)).trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedContents = String(
+            contents.trimmingCharacters(in: .whitespacesAndNewlines).prefix(10_000)
+        )
         guard
             !trimmedContents.isEmpty,
-            (0..<document.pageCount).contains(pageIndex)
+            (0..<document.pageCount).contains(pageIndex),
+            Self.isFinite(point)
         else {
             throw PDFDocumentEditorError.invalidAnnotation
         }
@@ -483,10 +550,19 @@ final class PDFDocumentEditor: ObservableObject {
                 withProperties: nil
             )
             annotation.contents = trimmedContents
-            Self.configureOwnedAnnotation(annotation, identifier: identifier, color: color.color)
+            Self.configureOwnedAnnotation(annotation, identifier: identifier, color: color)
             page.addAnnotation(annotation)
         }
         return identifier
+    }
+
+    func addTextNote(
+        pageIndex: Int,
+        point: CGPoint,
+        contents: String,
+        color: AnnotationPaletteColor
+    ) throws -> AnnotationIdentifier {
+        try addTextNote(pageIndex: pageIndex, point: point, contents: contents, customColor: color.color)
     }
 
     @discardableResult
@@ -498,6 +574,7 @@ final class PDFDocumentEditor: ObservableObject {
     ) throws -> AnnotationIdentifier {
         guard
             (0..<document.pageCount).contains(pageIndex),
+            Self.isFinite(point),
             let image = NSImage(data: imageData),
             image.size.width > 0,
             image.size.height > 0
@@ -665,13 +742,21 @@ final class PDFDocumentEditor: ObservableObject {
     func updateAnnotationColor(
         pageIndex: Int,
         identifier: AnnotationIdentifier,
-        color: AnnotationPaletteColor
+        customColor color: NSColor
     ) throws {
         try mutateOwnedAnnotation(pageIndex: pageIndex, identifier: identifier) { annotation in
             let alpha: CGFloat = annotation.type == PDFAnnotationSubtype.highlight.pdfTypeName ? 0.35 : 0.9
-            annotation.color = color.color.withAlphaComponent(alpha)
+            annotation.color = color.withAlphaComponent(alpha)
             annotation.modificationDate = Date()
         }
+    }
+
+    func updateAnnotationColor(
+        pageIndex: Int,
+        identifier: AnnotationIdentifier,
+        color: AnnotationPaletteColor
+    ) throws {
+        try updateAnnotationColor(pageIndex: pageIndex, identifier: identifier, customColor: color.color)
     }
 
     func updateInkLineWidth(
@@ -695,7 +780,9 @@ final class PDFDocumentEditor: ObservableObject {
         identifier: AnnotationIdentifier,
         contents: String
     ) throws {
-        let trimmedContents = String(contents.prefix(10_000)).trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedContents = String(
+            contents.trimmingCharacters(in: .whitespacesAndNewlines).prefix(10_000)
+        )
         guard !trimmedContents.isEmpty else {
             throw PDFDocumentEditorError.invalidAnnotation
         }
@@ -743,6 +830,26 @@ final class PDFDocumentEditor: ObservableObject {
 
     var formFields: [PDFFormField] {
         PDFFormEngine.fields(in: document)
+    }
+
+    var ownedAnnotations: [OwnedAnnotationItem] {
+        (0..<document.pageCount).flatMap { pageIndex -> [OwnedAnnotationItem] in
+            guard let page = document.page(at: pageIndex) else { return [] }
+            return page.annotations.compactMap { annotation in
+                guard
+                    let identifier = AnnotationIdentifier(annotation: annotation),
+                    let kind = Self.annotationTool(for: annotation)
+                else { return nil }
+                let contents = annotation.contents?.trimmingCharacters(in: .whitespacesAndNewlines)
+                let label = contents.flatMap { $0.isEmpty ? nil : $0 } ?? kind.title
+                return OwnedAnnotationItem(
+                    identifier: identifier,
+                    pageIndex: pageIndex,
+                    kind: kind,
+                    label: String(label.prefix(120))
+                )
+            }
+        }
     }
 
     func updateFormField(
@@ -890,6 +997,10 @@ final class PDFDocumentEditor: ObservableObject {
 
     private func commitAnnotationMutation() throws {
         let snapshot = try Self.dataRepresentation(of: document)
+        guard snapshot != revisions[snapshotIndex].pdfData else {
+            refreshHistoryState()
+            return
+        }
         revisions = Array(revisions.prefix(snapshotIndex + 1))
         revisions.append(
             DocumentRevision(pdfData: snapshot, pageIDs: pageIDs)
@@ -949,6 +1060,14 @@ final class PDFDocumentEditor: ObservableObject {
         )
     }
 
+    private static func isFinite(_ point: CGPoint) -> Bool {
+        point.x.isFinite && point.y.isFinite
+    }
+
+    private static func isFinite(_ bounds: CGRect) -> Bool {
+        isFinite(bounds.origin) && bounds.width.isFinite && bounds.height.isFinite
+    }
+
     private static func ownedAnnotation(
         on page: PDFPage,
         identifier: AnnotationIdentifier
@@ -958,6 +1077,24 @@ final class PDFDocumentEditor: ObservableObject {
                 return false
             }
             return annotationIdentifier == identifier
+        }
+    }
+
+    private static func annotationTool(for annotation: PDFAnnotation) -> AnnotationTool? {
+        switch annotation.type {
+        case PDFAnnotationSubtype.highlight.pdfTypeName: .highlight
+        case PDFAnnotationSubtype.underline.pdfTypeName: .underline
+        case PDFAnnotationSubtype.strikeOut.pdfTypeName: .strikethrough
+        case PDFAnnotationSubtype.ink.pdfTypeName: .freehand
+        case PDFAnnotationSubtype.text.pdfTypeName: .textNote
+        case PDFAnnotationSubtype.square.pdfTypeName: .rectangle
+        case PDFAnnotationSubtype.circle.pdfTypeName: .oval
+        case PDFAnnotationSubtype.line.pdfTypeName:
+            annotation.endLineStyle == .closedArrow ? .arrow : .line
+        case PDFAnnotationSubtype.stamp.pdfTypeName:
+            VisualSignatureAnnotation.imageData(from: annotation) == nil ||
+                VisualSignatureAnnotation.isCustomStamp(annotation) ? .stamp : .signature
+        default: nil
         }
     }
 

@@ -15,18 +15,19 @@ struct PDFFormEditorSheet: View {
             footer
         }
         .frame(minWidth: 560, idealWidth: 680, minHeight: 480, idealHeight: 660)
+        .background(CatppuccinMocha.base)
     }
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Label("Fill PDF Form", systemImage: "list.bullet.rectangle")
-                .font(.title2.weight(.semibold))
-            Text("Changes are made to the protected working copy. The original PDF stays unchanged.")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-        }
+        SheetHeader(
+            title: "Fill PDF Form",
+            subtitle: "Changes are made to the protected working copy. The original PDF stays unchanged.",
+            systemImage: "list.bullet.rectangle",
+            tint: .blue
+        )
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(20)
+        .background(CatppuccinMocha.mantle)
     }
 
     private var fieldList: some View {
@@ -78,6 +79,7 @@ struct PDFFormEditorSheet: View {
             .keyboardShortcut(.defaultAction)
         }
         .padding(16)
+        .background(CatppuccinMocha.mantle)
     }
 
     private func validate() {
@@ -127,7 +129,14 @@ private struct PDFFormFieldRow: View {
             control
         }
         .padding(14)
-        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 10))
+        .background(
+            CatppuccinMocha.surface0.opacity(0.72),
+            in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(CatppuccinMocha.panelBorder)
+        }
         .accessibilityElement(children: .contain)
     }
 

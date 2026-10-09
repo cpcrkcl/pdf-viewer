@@ -106,7 +106,8 @@ struct PDFViewerApp: App {
             PDFViewerWindowRoot(
                 sharedServices: sharedServices,
                 windowRegistry: windowRegistry,
-                launchRequest: request.wrappedValue
+                launchRequest: request.wrappedValue,
+                initialDocumentURL: windowLaunchConfiguration.initialDocumentURL
             )
                 .background(
                     WindowLaunchSizeController(
@@ -142,12 +143,13 @@ private struct PDFViewerWindowRoot: View {
     init(
         sharedServices: SharedServices,
         windowRegistry: WindowStateRegistry,
-        launchRequest: WindowLaunchRequest?
+        launchRequest: WindowLaunchRequest?,
+        initialDocumentURL: URL?
     ) {
         _appState = StateObject(wrappedValue: sharedServices.makeAppState())
         _windowID = State(initialValue: launchRequest?.id ?? UUID())
         self.windowRegistry = windowRegistry
-        self.initialURL = launchRequest?.url
+        self.initialURL = launchRequest?.url ?? initialDocumentURL
     }
 
     var body: some View {
@@ -244,7 +246,7 @@ private struct PDFViewerCommands: Commands {
             .keyboardShortcut("n")
 
             Button("Open PDF...") {
-                appState?.isFileImporterPresented = true
+                appState?.presentOpenPDFPanel()
             }
             .keyboardShortcut("o")
             .disabled(appState == nil)
@@ -393,28 +395,48 @@ private struct PDFViewerCommands: Commands {
             .keyboardShortcut("3")
             .disabled(appState?.session == nil)
         }
+
+        CommandMenu("Library Data") {
+            Button("Export Bookmarks as JSON…") { appState?.exportBookmarksJSON() }
+                .disabled(appState == nil)
+            Button("Import Bookmarks from JSON…") { appState?.importBookmarksJSON() }
+                .disabled(appState == nil)
+            Divider()
+            Button("Export Recent Documents as JSON…") { appState?.exportRecentDocumentsJSON() }
+                .disabled(appState == nil)
+            Button("Import Recent Documents from JSON…") { appState?.importRecentDocumentsJSON() }
+                .disabled(appState == nil)
+        }
     }
 }
 
 private struct WindowLaunchConfiguration {
     let initialSize: CGSize
     let hasUITestOverride: Bool
+    let initialDocumentURL: URL?
 
     static var current: WindowLaunchConfiguration {
         let arguments = ProcessInfo.processInfo.arguments
         let width = value(after: "-PDFViewerUITestWindowWidth", in: arguments)
         let height = value(after: "-PDFViewerUITestWindowHeight", in: arguments)
+        #if DEBUG
+        let initialDocumentURL = uiTestDocumentURL(from: arguments)
+        #else
+        let initialDocumentURL: URL? = nil
+        #endif
 
         guard let width, let height, width >= 720, height >= 520 else {
             return WindowLaunchConfiguration(
                 initialSize: CGSize(width: 1100, height: 720),
-                hasUITestOverride: false
+                hasUITestOverride: false,
+                initialDocumentURL: initialDocumentURL
             )
         }
 
         return WindowLaunchConfiguration(
             initialSize: CGSize(width: width, height: height),
-            hasUITestOverride: true
+            hasUITestOverride: true,
+            initialDocumentURL: initialDocumentURL
         )
     }
 
@@ -429,6 +451,48 @@ private struct WindowLaunchConfiguration {
         }
         return CGFloat(value)
     }
+
+    #if DEBUG
+    private static func stringValue(after flag: String, in arguments: [String]) -> String? {
+        guard
+            let flagIndex = arguments.firstIndex(of: flag),
+            arguments.indices.contains(flagIndex + 1)
+        else {
+            return nil
+        }
+        let value = arguments[flagIndex + 1]
+        return value.isEmpty ? nil : value
+    }
+
+    private static func uiTestDocumentURL(from arguments: [String]) -> URL? {
+        guard
+            let encodedData = stringValue(after: "-PDFViewerUITestDocumentData", in: arguments),
+            let data = Data(base64Encoded: encodedData),
+            !data.isEmpty,
+            let requestedName = stringValue(after: "-PDFViewerUITestDocumentName", in: arguments)
+        else {
+            return nil
+        }
+        let safeName = (requestedName as NSString).lastPathComponent
+        guard !safeName.isEmpty, safeName == requestedName else {
+            return nil
+        }
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PDFViewer-UITest-\(UUID().uuidString)", isDirectory: true)
+        let url = directory.appendingPathComponent(safeName)
+        do {
+            try FileManager.default.createDirectory(
+                at: directory,
+                withIntermediateDirectories: false
+            )
+            try data.write(to: url, options: .atomic)
+            return url
+        } catch {
+            try? FileManager.default.removeItem(at: directory)
+            return nil
+        }
+    }
+    #endif
 }
 
 private struct WindowLaunchSizeController: NSViewRepresentable {

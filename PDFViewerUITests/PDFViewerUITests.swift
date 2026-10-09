@@ -5,11 +5,13 @@ import XCTest
 final class PDFViewerUITests: XCTestCase {
     private var app: XCUIApplication!
     private var exportDirectory: URL?
+    private var standardFixtureDirectory: URL?
+    private var standardFixtureURL: URL!
     private var protectedFixtureDirectory: URL?
     private var navigationFixtureDirectory: URL?
 
     override func setUp() async throws {
-        await MainActor.run {
+        try await MainActor.run {
             continueAfterFailure = false
             app = XCUIApplication()
             app.launchArguments = [
@@ -20,6 +22,7 @@ final class PDFViewerUITests: XCTestCase {
             app.launch()
             app.activate()
             XCTAssertTrue(app.buttons["Choose PDF..."].waitForExistence(timeout: 5))
+            standardFixtureURL = try makeStandardFixture()
         }
     }
 
@@ -30,6 +33,11 @@ final class PDFViewerUITests: XCTestCase {
                 try? FileManager.default.removeItem(at: exportDirectory)
             }
             exportDirectory = nil
+            if let standardFixtureDirectory {
+                try? FileManager.default.removeItem(at: standardFixtureDirectory)
+            }
+            standardFixtureDirectory = nil
+            standardFixtureURL = nil
             if let protectedFixtureDirectory {
                 try? FileManager.default.removeItem(at: protectedFixtureDirectory)
             }
@@ -43,7 +51,18 @@ final class PDFViewerUITests: XCTestCase {
     }
 
     func testNativeOpenPanelDirtyCloseGuardShortcutsAndOrganizerLabels() throws {
-        try openFixtureThroughNativePanel()
+        let chooseButton = app.buttons["Choose PDF..."]
+        chooseButton.click()
+        dismissOpenPDFPanel()
+        XCTAssertTrue(chooseButton.waitForExistence(timeout: 2))
+        XCTAssertTrue(chooseButton.isHittable)
+
+        app.typeKey("o", modifierFlags: .command)
+        dismissOpenPDFPanel()
+        XCTAssertTrue(chooseButton.waitForExistence(timeout: 2))
+        XCTAssertTrue(chooseButton.isHittable)
+
+        try openFixtureForUITest()
 
         app.typeKey("f", modifierFlags: .command)
         let searchField = app.textFields["Search document text"]
@@ -58,7 +77,7 @@ final class PDFViewerUITests: XCTestCase {
         XCTAssertTrue(organizer.buttons["Move Down"].exists)
         XCTAssertTrue(organizer.buttons["Rotate Left"].exists)
         XCTAssertTrue(organizer.buttons["Rotate Right"].exists)
-        XCTAssertTrue(organizer.buttons["Extract Selected Pages…"].exists)
+        XCTAssertTrue(organizer.menuButtons["Export Selected Pages…"].exists)
         XCTAssertTrue(organizer.buttons["Export New PDF…"].exists)
 
         organizer.buttons["Rotate Right"].click()
@@ -79,7 +98,7 @@ final class PDFViewerUITests: XCTestCase {
     }
 
     func testValidatedExportShowsReceiptAndAllowsQuietClose() throws {
-        try openFixtureThroughNativePanel()
+        try openFixtureForUITest()
         app.buttons["Organize"].click()
         let organizer = app.sheets.firstMatch
         XCTAssertTrue(organizer.waitForExistence(timeout: 3))
@@ -119,7 +138,7 @@ final class PDFViewerUITests: XCTestCase {
     }
 
     func testReaderAndOrganizerReflowAcrossCompactAndRegularWindowSizes() throws {
-        try openFixtureThroughNativePanel()
+        try openFixtureForUITest()
 
         let window = app.windows.firstMatch
         XCTAssertTrue(window.exists)
@@ -227,7 +246,7 @@ final class PDFViewerUITests: XCTestCase {
             organizer.buttons["Rotate Left"],
             organizer.buttons["Rotate Right"],
             organizer.buttons["Delete Page"],
-            organizer.buttons["Extract Selected Pages…"],
+            organizer.menuButtons["Export Selected Pages…"],
             organizer.buttons["Export New PDF…"],
             organizer.buttons["Done"],
         ]
@@ -240,7 +259,7 @@ final class PDFViewerUITests: XCTestCase {
             isContainedIn: organizer
         )
         XCTAssertGreaterThanOrEqual(
-            organizer.buttons["Extract Selected Pages…"].frame.width,
+            organizer.menuButtons["Export Selected Pages…"].frame.width,
             150
         )
         organizer.buttons["Done"].click()
@@ -254,7 +273,7 @@ final class PDFViewerUITests: XCTestCase {
     }
 
     func testAnnotationControlsRemainCompleteAtMinimumWindowSize() throws {
-        try openFixtureThroughNativePanel()
+        try openFixtureForUITest()
         let window = app.windows.firstMatch
         resizeWindow(window, width: 720, height: 548)
 
@@ -302,10 +321,7 @@ final class PDFViewerUITests: XCTestCase {
 
     func testPasswordPromptRetryUnlockAndEncryptedExportWarning() throws {
         let protectedURL = try makeProtectedFixture()
-        app.typeKey("o", modifierFlags: .command)
-        XCTAssertTrue(app.sheets.firstMatch.waitForExistence(timeout: 3))
-        try enterPathInNativePanel(protectedURL.path)
-        app.typeKey(.return, modifierFlags: [])
+        try launchOpeningDocument(protectedURL)
 
         let passwordField = app.secureTextFields["PDF password"]
         XCTAssertTrue(passwordField.waitForExistence(timeout: 4))
@@ -326,9 +342,44 @@ final class PDFViewerUITests: XCTestCase {
         XCTAssertTrue(app.buttons["Export"].waitForExistence(timeout: 2))
     }
 
+    func testFormsOCRRedactionAndConversionSurfaces() throws {
+        try openFixtureForUITest()
+        let tools = app.menuButtons["Document Tools"]
+        XCTAssertTrue(tools.waitForExistence(timeout: 2))
+
+        tools.click()
+        app.menuItems["Fill Form"].click()
+        XCTAssertTrue(app.staticTexts["Fill PDF Form"].waitForExistence(timeout: 2))
+        XCTAssertTrue(app.textFields["Full Name"].exists)
+        app.sheets.firstMatch.buttons["Done"].click()
+
+        tools.click()
+        app.menuItems["OCR & Scan Enhancement…"].click()
+        XCTAssertTrue(app.staticTexts["OCR & Scan Enhancement"].waitForExistence(timeout: 2))
+        XCTAssertTrue(
+            app.popUpButtons["OCR Language"].exists
+                || app.menuButtons["OCR Language"].exists
+        )
+        XCTAssertTrue(app.sliders["Minimum Confidence"].exists)
+        app.sheets.firstMatch.buttons["Cancel"].click()
+
+        tools.click()
+        app.menuItems["Local Conversion…"].click()
+        XCTAssertTrue(app.staticTexts["Local Conversion"].waitForExistence(timeout: 2))
+        XCTAssertTrue(app.radioButtons["PDF to Images"].exists)
+        XCTAssertTrue(app.radioButtons["Office to PDF"].exists)
+        app.sheets.firstMatch.buttons["Cancel"].click()
+
+        tools.click()
+        app.menuItems["Permanent Redaction…"].click()
+        XCTAssertTrue(app.buttons["Apply Permanently…"].waitForExistence(timeout: 2))
+        XCTAssertTrue(app.textFields["Optional redaction reason label"].exists)
+        app.buttons["Cancel"].click()
+    }
+
     func testReaderSidebarBookmarksOutlinesAndNavigationHistory() throws {
         let navigationURL = try makeNavigationFixture()
-        try openDocumentThroughNativePanel(navigationURL)
+        try openDocumentForUITest(navigationURL)
 
         let window = app.windows.firstMatch
         resizeWindow(window, width: 720, height: 548)
@@ -387,11 +438,7 @@ final class PDFViewerUITests: XCTestCase {
         app.buttons["Forward"].click()
         XCTAssertEqual(pageField.value as? String, "2")
 
-        app.terminate()
-        app.launch()
-        app.activate()
-        XCTAssertTrue(app.buttons["Choose PDF..."].waitForExistence(timeout: 5))
-        try openDocumentThroughNativePanel(navigationURL)
+        try openDocumentForUITest(navigationURL)
         sidebarTab(named: "Bookmarks").click()
         XCTAssertTrue(app.buttons["Important Section, Page 2"].waitForExistence(timeout: 3))
 
@@ -402,16 +449,38 @@ final class PDFViewerUITests: XCTestCase {
         )
     }
 
-    private func openFixtureThroughNativePanel() throws {
-        try openDocumentThroughNativePanel(fixtureURL)
+    private func dismissOpenPDFPanel() {
+        let panel = app.windows["Open PDF"]
+        XCTAssertTrue(
+            panel.waitForExistence(timeout: 3),
+            "Expected the Open PDF file picker to appear"
+        )
+        app.typeKey(.escape, modifierFlags: [])
+        XCTAssertTrue(panel.waitForNonExistence(timeout: 3))
     }
 
-    private func openDocumentThroughNativePanel(_ url: URL) throws {
-        app.typeKey("o", modifierFlags: .command)
-        XCTAssertTrue(app.sheets.firstMatch.waitForExistence(timeout: 3))
-        try enterPathInNativePanel(url.path)
-        app.typeKey(.return, modifierFlags: [])
-        XCTAssertTrue(app.buttons["Organize"].waitForExistence(timeout: 5))
+    private func openFixtureForUITest() throws {
+        try openDocumentForUITest(standardFixtureURL)
+    }
+
+    private func openDocumentForUITest(_ url: URL) throws {
+        try launchOpeningDocument(url)
+        XCTAssertTrue(app.buttons["Organize"].waitForExistence(timeout: 15))
+    }
+
+    private func launchOpeningDocument(_ url: URL) throws {
+        let encodedData = try Data(contentsOf: url).base64EncodedString()
+
+        app.terminate()
+        app.launchArguments = [
+            "-ApplePersistenceIgnoreState", "YES",
+            "-PDFViewerUITestWindowWidth", "1100",
+            "-PDFViewerUITestWindowHeight", "720",
+            "-PDFViewerUITestDocumentName", url.lastPathComponent,
+            "-PDFViewerUITestDocumentData", encodedData,
+        ]
+        app.launch()
+        app.activate()
     }
 
     private func sidebarTab(named name: String) -> XCUIElement {
@@ -450,9 +519,7 @@ final class PDFViewerUITests: XCTestCase {
 
     private func enterPathInNativePanel(_ path: String) throws {
         app.typeKey("g", modifierFlags: [.command, .shift])
-        let pathField = app.textFields["PathTextField"]
-        XCTAssertTrue(pathField.waitForExistence(timeout: 2))
-        pathField.typeText(path)
+        app.typeText(path)
         app.typeKey(.return, modifierFlags: [])
     }
 
@@ -486,11 +553,31 @@ final class PDFViewerUITests: XCTestCase {
         )
     }
 
-    private var fixtureURL: URL {
-        URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .appendingPathComponent("pdf-mac-app-gameplan.pdf")
+    private func makeStandardFixture() throws -> URL {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PDFViewerStandardUITest-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        standardFixtureDirectory = directory
+        let url = directory.appendingPathComponent("Standard Fixture.pdf")
+        let document = PDFDocument()
+        for _ in 0..<3 {
+            document.insert(PDFPage(), at: document.pageCount)
+        }
+        if let firstPage = document.page(at: 0) {
+            let field = PDFAnnotation(
+                bounds: CGRect(x: 72, y: 650, width: 220, height: 28),
+                forType: .widget,
+                withProperties: nil
+            )
+            field.widgetFieldType = .text
+            field.fieldName = "fullName"
+            field.setValue("Full Name", forAnnotationKey: .widgetTextLabelUI)
+            firstPage.addAnnotation(field)
+        }
+        guard document.write(to: url) else {
+            throw UITestFixtureError.couldNotWriteStandardPDF
+        }
+        return url
     }
 
     private func makeProtectedFixture() throws -> URL {
@@ -551,6 +638,7 @@ final class PDFViewerUITests: XCTestCase {
     }
 
     private enum UITestFixtureError: Error {
+        case couldNotWriteStandardPDF
         case couldNotWriteProtectedPDF
         case couldNotWriteNavigationPDF
     }

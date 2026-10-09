@@ -197,12 +197,14 @@ struct PDFExporter: PDFExporting {
         guard resolvedSourceURL.path != resolvedDestinationURL.path else {
             throw PDFExportError.sourceAndDestinationMatch
         }
-
         let hasScopedAccess = destinationURL.startAccessingSecurityScopedResource()
         defer {
             if hasScopedAccess {
                 destinationURL.stopAccessingSecurityScopedResource()
             }
+        }
+        if resourcesReferToSameFile(resolvedSourceURL, resolvedDestinationURL) {
+            throw PDFExportError.sourceAndDestinationMatch
         }
 
         var isStagingDirectory: ObjCBool = false
@@ -339,6 +341,7 @@ struct PDFExporter: PDFExporting {
         }
 
         guard
+            expectedSnapshot.pages.count == expectedSnapshot.pageCount,
             validationSnapshot(of: outputDocument) == expectedSnapshot,
             let data = outputDocument.dataRepresentation(),
             !data.isEmpty
@@ -350,6 +353,7 @@ struct PDFExporter: PDFExporting {
 
     private func validationSnapshot(of document: PDFDocument) -> ValidationSnapshot {
         ValidationSnapshot(
+            pageCount: document.pageCount,
             pages: (0..<document.pageCount).compactMap { pageIndex in
                 guard let page = document.page(at: pageIndex) else {
                     return nil
@@ -391,9 +395,25 @@ struct PDFExporter: PDFExporting {
             }
         )
     }
+
+    private func resourcesReferToSameFile(_ firstURL: URL, _ secondURL: URL) -> Bool {
+        guard
+            fileManager.fileExists(atPath: secondURL.path),
+            let firstIdentifier = try? firstURL.resourceValues(
+                forKeys: [.fileResourceIdentifierKey]
+            ).fileResourceIdentifier as? NSObject,
+            let secondIdentifier = try? secondURL.resourceValues(
+                forKeys: [.fileResourceIdentifierKey]
+            ).fileResourceIdentifier as? NSObject
+        else {
+            return false
+        }
+        return firstIdentifier.isEqual(secondIdentifier)
+    }
 }
 
 private struct ValidationSnapshot: Equatable {
+    let pageCount: Int
     let pages: [ValidationPage]
 }
 

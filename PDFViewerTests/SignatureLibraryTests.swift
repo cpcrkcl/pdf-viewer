@@ -67,6 +67,69 @@ final class SignatureLibraryTests: XCTestCase {
         XCTAssertEqual(stored.aspectRatio, 2.5, accuracy: 0.01)
     }
 
+    func testImportRejectsUnsupportedImageFormatsInsteadOfMislabellingTheirBytes() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("SignatureFormatTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let library = SignatureLibrary(storageDirectory: directory)
+
+        let image = NSImage(size: NSSize(width: 20, height: 20))
+        image.lockFocus()
+        NSColor.black.setFill()
+        NSRect(origin: .zero, size: image.size).fill()
+        image.unlockFocus()
+        let tiff = try XCTUnwrap(image.tiffRepresentation)
+
+        XCTAssertThrowsError(
+            try library.importImage(data: tiff, displayName: "TIFF")
+        ) { error in
+            XCTAssertEqual(error as? SignatureLibraryError, .invalidImage)
+        }
+        XCTAssertTrue(library.signatures.isEmpty)
+    }
+
+    func testReloadIgnoresTamperedIndexPathsAndDuplicateIDs() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("SignatureIndexTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let id = UUID()
+        let unsafeID = UUID()
+        try makeImageData().write(
+            to: directory.appendingPathComponent("\(id.uuidString.lowercased()).png")
+        )
+        let records = [
+            StoredSignature(
+                id: unsafeID,
+                displayName: "Unsafe",
+                fileName: "../outside.png",
+                aspectRatio: 2,
+                createdAt: Date()
+            ),
+            StoredSignature(
+                id: id,
+                displayName: "First",
+                fileName: "\(id.uuidString.lowercased()).png",
+                aspectRatio: 2,
+                createdAt: Date()
+            ),
+            StoredSignature(
+                id: id,
+                displayName: "Duplicate",
+                fileName: "\(id.uuidString.lowercased()).png",
+                aspectRatio: 2,
+                createdAt: Date().addingTimeInterval(1)
+            ),
+        ]
+        try JSONEncoder().encode(records).write(
+            to: directory.appendingPathComponent("signatures.v1.json")
+        )
+
+        let signatures = SignatureLibrary(storageDirectory: directory).signatures
+        XCTAssertEqual(signatures.count, 1)
+        XCTAssertEqual(signatures.first?.displayName, "First")
+    }
+
     private func makeImageData() throws -> Data {
         let image = NSImage(size: NSSize(width: 180, height: 60))
         image.lockFocus()
