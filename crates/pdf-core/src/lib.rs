@@ -6,6 +6,7 @@ pub mod editor;
 pub mod engine;
 pub mod error;
 pub mod export;
+pub mod geometry;
 pub mod ids;
 pub mod loader;
 pub mod navigation;
@@ -15,6 +16,7 @@ pub mod recents;
 pub mod security;
 pub mod structure;
 pub mod testing;
+pub mod text;
 
 pub use editor::DocumentEditor;
 pub use error::{CoreError, CoreResult};

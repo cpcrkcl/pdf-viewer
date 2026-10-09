@@ -17,7 +17,7 @@ use crate::document_tab::DocumentTab;
 use crate::reader_state::{DisplayMode, PageLabelStyle, ReaderTheme};
 use crate::render::RenderService;
 use crate::theme::{self, mocha};
-use crate::{reader_view, sidebar};
+use crate::{interaction, reader_view, sidebar};
 
 const PREFERENCES_KEY: &str = "pdfviewer.preferences.v1";
 
@@ -88,6 +88,7 @@ enum Dialog {
     PageLabels {
         tab: u64,
     },
+    ConfirmLink(String),
 }
 
 pub struct PdfViewerApp {
@@ -420,6 +421,15 @@ impl PdfViewerApp {
         }
     }
 
+    fn copy_selection(&mut self, ctx: &egui::Context) {
+        let Some(tab) = self.tabs.get(self.active) else { return };
+        let Some(text) = tab.selected_text() else { return };
+        if !tab.session.security.allows_content_copying() {
+            return self.error("This PDF's permissions don't allow copying text.");
+        }
+        ctx.copy_text(text);
+    }
+
     // MARK: Library JSON
 
     fn export_library_json(&mut self, title: &str, file_name: &str, data: Result<Vec<u8>, CoreError>) {
@@ -521,6 +531,23 @@ impl PdfViewerApp {
         if shortcut(Modifiers::CTRL, Key::Tab) {
             self.active = (self.active + 1) % self.tabs.len();
         }
+        if shortcut(command, Key::F) {
+            self.active_tab().map(|tab| {
+                tab.search.focus_requested = true;
+                tab.reader.is_sidebar_visible = true;
+                tab.reader.sidebar_tab = crate::reader_state::SidebarTab::Search;
+            });
+        }
+        if shortcut(command_shift, Key::G) {
+            self.active_tab().map(|tab| tab.step_search(false));
+        } else if shortcut(command, Key::G) {
+            self.active_tab().map(|tab| tab.step_search(true));
+        }
+        if !ctx.egui_wants_keyboard_input() && ctx.input_mut(|input| {
+            input.events.iter().any(|event| matches!(event, egui::Event::Copy))
+        }) {
+            self.copy_selection(ctx);
+        }
 
         if ctx.egui_wants_keyboard_input() {
             return;
@@ -536,6 +563,9 @@ impl PdfViewerApp {
         }
         if pressed(Key::PageUp) || (single && (pressed(Key::ArrowLeft) || pressed(Key::ArrowUp))) {
             tab.show_page(current.saturating_sub(step));
+        }
+        if pressed(Key::Escape) {
+            tab.selection = None;
         }
         if pressed(Key::Home) {
             tab.show_page(0);
@@ -853,6 +883,7 @@ impl PdfViewerApp {
                     }
                 });
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                search_field(ui, tab);
                 if tab.session.security.is_encrypted {
                     ui.label(RichText::new("🔒 Protected").color(mocha::YELLOW));
                 }
@@ -1100,6 +1131,21 @@ impl PdfViewerApp {
                         }
                     });
                 }
+                Dialog::ConfirmLink(uri) => {
+                    ui.heading("Open external link?");
+                    ui.label("This PDF wants to open:");
+                    ui.add(egui::Label::new(RichText::new(uri.as_str()).monospace()).wrap());
+                    ui.weak("Links in documents can lead anywhere. Only continue if you trust this PDF.");
+                    ui.horizontal(|ui| {
+                        if ui.button("Cancel").clicked() {
+                            keep = false;
+                        }
+                        if ui.button("Open Link").clicked() {
+                            keep = false;
+                            let _ = std::process::Command::new("open").arg(uri.as_str()).spawn();
+                        }
+                    });
+                }
                 Dialog::PageLabels { tab } => {
                     ui.heading("Page Labels");
                     let Some(index) = self.tab_index(*tab) else {
@@ -1181,7 +1227,17 @@ impl eframe::App for PdfViewerApp {
 
         egui::CentralPanel::no_frame().show(ui, |ui| {
             if let Some(tab) = self.tabs.get_mut(self.active) {
-                reader_view::show(ui, tab, &mut self.renderer);
+                tab.poll_search();
+                let response = reader_view::show(ui, tab, &mut self.renderer);
+                let painter = ui.painter_at(response.canvas);
+                interaction::paint_text_overlays(&painter, &ctx, tab, &response);
+                match interaction::handle_select_text(&ctx, tab, &response) {
+                    interaction::InteractionAction::None => {}
+                    interaction::InteractionAction::ConfirmExternalLink(uri) => self.dialogs.push(Dialog::ConfirmLink(uri)),
+                    interaction::InteractionAction::RejectedLink => {
+                        self.dialogs.push(Dialog::Error("PDFViewer only opens web and email links from documents.".into()))
+                    }
+                }
             } else {
                 ui.painter().rect_filled(ui.max_rect(), 0.0, mocha::BASE);
                 self.empty_state(ui);
@@ -1209,6 +1265,17 @@ impl eframe::App for PdfViewerApp {
 
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         if let Some(capture) = &mut self.capture {
+            if let Some(tab) = self.tabs.first_mut() {
+                if std::mem::take(&mut capture.rotate) {
+                    let _ = tab.session.editor.rotate_pages(&[0], true);
+                    tab.after_mutation(Some(0));
+                }
+                if let Some(query) = capture.search.take() {
+                    tab.search.query = query;
+                    tab.start_search(ctx);
+                    tab.reader.sidebar_tab = crate::reader_state::SidebarTab::Search;
+                }
+            }
             capture.tick(ctx);
         }
     }
@@ -1219,6 +1286,57 @@ impl eframe::App for PdfViewerApp {
 
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
         mocha::CRUST.to_normalized_gamma_f32()
+    }
+}
+
+fn search_field(ui: &mut Ui, tab: &mut DocumentTab) {
+    let count = tab.search.matches().len();
+    if count > 0 {
+        if ui.small_button("↓").on_hover_text("Next Match (⌘G)").clicked() {
+            tab.step_search(true);
+        }
+        if ui.small_button("↑").on_hover_text("Previous Match (⇧⌘G)").clicked() {
+            tab.step_search(false);
+        }
+        ui.label(format!("{}/{count}", tab.search.active.map_or(0, |i| i + 1)));
+    } else if tab.search.is_running() {
+        ui.spinner();
+    }
+    let whole = ui.selectable_label(tab.search.options.whole_words, "W").on_hover_text("Whole Words");
+    if whole.clicked() {
+        tab.search.options.whole_words = !tab.search.options.whole_words;
+    }
+    let case = ui.selectable_label(tab.search.options.case_sensitive, "Aa").on_hover_text("Match Case");
+    if case.clicked() {
+        tab.search.options.case_sensitive = !tab.search.options.case_sensitive;
+    }
+    let response = ui.add(
+        egui::TextEdit::singleline(&mut tab.search.query)
+            .hint_text("Search")
+            .desired_width(180.0),
+    );
+    if std::mem::take(&mut tab.search.focus_requested) {
+        response.request_focus();
+    }
+    let submitted = response.lost_focus() && ui.input(|input| input.key_pressed(Key::Enter));
+    if submitted || case.clicked() || whole.clicked() {
+        if tab.search.query.trim().is_empty() {
+            tab.search.clear();
+        } else if tab.search.is_stale() || tab.search.outcome.is_none() {
+            let ctx = ui.ctx().clone();
+            tab.start_search(&ctx);
+            tab.reader.is_sidebar_visible = true;
+            tab.reader.sidebar_tab = crate::reader_state::SidebarTab::Search;
+        } else {
+            let backwards = ui.input(|input| input.modifiers.shift);
+            tab.step_search(!backwards);
+        }
+        if submitted {
+            response.request_focus();
+        }
+    }
+    if response.changed() && tab.search.query.is_empty() {
+        tab.search.clear();
     }
 }
 

@@ -48,10 +48,11 @@ pub enum SidebarTab {
     Contents,
     Bookmarks,
     Annotations,
+    Search,
 }
 
 impl SidebarTab {
-    pub const ALL: [Self; 4] = [Self::Thumbnails, Self::Contents, Self::Bookmarks, Self::Annotations];
+    pub const ALL: [Self; 5] = [Self::Thumbnails, Self::Contents, Self::Bookmarks, Self::Annotations, Self::Search];
 
     pub fn title(self) -> &'static str {
         match self {
@@ -59,6 +60,7 @@ impl SidebarTab {
             Self::Contents => "Contents",
             Self::Bookmarks => "Bookmarks",
             Self::Annotations => "Annotations",
+            Self::Search => "Search",
         }
     }
 }

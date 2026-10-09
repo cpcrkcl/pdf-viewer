@@ -4,6 +4,7 @@ mod annotation_ui;
 mod app;
 mod debug_capture;
 mod document_tab;
+mod interaction;
 #[cfg(target_os = "macos")]
 mod macos;
 mod reader_state;

@@ -8,6 +8,10 @@ pub struct DebugCapture {
     path: PathBuf,
     frames: u32,
     requested: bool,
+    /// `PDFVIEWER_CAPTURE_SEARCH`: a query to run in the first document.
+    pub search: Option<String>,
+    /// `PDFVIEWER_CAPTURE_ROTATE=1`: rotate the first page before capturing.
+    pub rotate: bool,
 }
 
 impl DebugCapture {
@@ -16,6 +20,8 @@ impl DebugCapture {
             path: PathBuf::from(path),
             frames: 0,
             requested: false,
+            search: std::env::var("PDFVIEWER_CAPTURE_SEARCH").ok(),
+            rotate: std::env::var_os("PDFVIEWER_CAPTURE_ROTATE").is_some(),
         })
     }
 

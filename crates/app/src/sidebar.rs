@@ -42,6 +42,10 @@ pub fn show(
             crate::annotation_ui::annotation_list(ui, tab);
             SidebarAction::None
         }
+        SidebarTab::Search => {
+            search_results(ui, tab);
+            SidebarAction::None
+        }
     }
 }
 
@@ -50,10 +54,11 @@ fn thumbnails(ui: &mut Ui, tab: &mut DocumentTab, renderer: &mut RenderService) 
     let pixels_per_point = ui.ctx().pixels_per_point();
     let key = tab.document_key();
     let bytes = tab.pdf_data();
-    let heights: Vec<f32> = tab
-        .metrics
-        .iter()
-        .map(|metrics| width * metrics.size.y / metrics.size.x.max(1.0) + 26.0)
+    let heights: Vec<f32> = (0..tab.pages.len())
+        .map(|index| {
+            let size = tab.page_size(index);
+            width * size.y / size.x.max(1.0) + 26.0
+        })
         .collect();
     let row_height = heights.iter().copied().fold(0.0, f32::max).max(40.0);
     let selected = tab.reader.selected_page_indexes().clone();
@@ -63,11 +68,11 @@ fn thumbnails(ui: &mut Ui, tab: &mut DocumentTab, renderer: &mut RenderService) 
     egui::ScrollArea::vertical()
         .id_salt(("thumbs", tab.id))
         .auto_shrink([false, false])
-        .show_rows(ui, row_height, tab.metrics.len(), |ui, range| {
+        .show_rows(ui, row_height, tab.pages.len(), |ui, range| {
             for index in range {
                 let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), row_height), Sense::click());
-                let metrics = &tab.metrics[index];
-                let image_height = width * metrics.size.y / metrics.size.x.max(1.0);
+                let size = tab.page_size(index);
+                let image_height = width * size.y / size.x.max(1.0);
                 let image_rect = Rect::from_min_size(
                     pos2(rect.center().x - width / 2.0, rect.min.y + 4.0),
                     vec2(width, image_height.min(row_height - 26.0)),
@@ -214,4 +219,69 @@ fn bookmark_list(ui: &mut Ui, tab: &mut DocumentTab, bookmarks: &mut PageBookmar
         bookmarks.remove(id);
     }
     action
+}
+
+fn search_results(ui: &mut Ui, tab: &mut DocumentTab) {
+    use pdf_core::text::SearchOutcome;
+    match &tab.search.outcome {
+        None if tab.search.is_running() => {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label("Searching…");
+            });
+            return;
+        }
+        None => {
+            ui.weak("Type in the search field and press Return.");
+            return;
+        }
+        Some(SearchOutcome::TextUnavailable) => {
+            ui.weak("This PDF has no searchable text. Run OCR to make scanned pages searchable.");
+            return;
+        }
+        Some(SearchOutcome::NoMatches) => {
+            ui.weak("No matches.");
+            return;
+        }
+        Some(SearchOutcome::Matches(_)) => {}
+    }
+    let count = tab.search.matches().len();
+    ui.label(format!("{count} match{}", if count == 1 { "" } else { "es" }));
+    ui.horizontal(|ui| {
+        if ui.small_button("Mark All").clicked() {
+            tab.search.marked = (0..count).collect();
+        }
+        if ui.small_button("Clear Marks").clicked() {
+            tab.search.marked.clear();
+        }
+    });
+    ui.separator();
+    let mut select = None;
+    let active = tab.search.active;
+    let labels: Vec<String> = tab.search.matches().iter().map(|found| tab.page_label(found.page)).collect();
+    egui::ScrollArea::vertical()
+        .id_salt(("search-results", tab.id))
+        .auto_shrink([false, false])
+        .show_rows(ui, 22.0, count, |ui, range| {
+            for index in range {
+                let found = &tab.search.matches()[index];
+                let text = format!("p. {}  ·  {}", labels[index], found.text.replace('\n', " "));
+                ui.horizontal(|ui| {
+                    let mut marked = tab.search.marked.contains(&index);
+                    if ui.checkbox(&mut marked, "").on_hover_text("Mark for redaction").changed() {
+                        if marked {
+                            tab.search.marked.insert(index);
+                        } else {
+                            tab.search.marked.remove(&index);
+                        }
+                    }
+                    if ui.selectable_label(active == Some(index), text).clicked() {
+                        select = Some(index);
+                    }
+                });
+            }
+        });
+    if let Some(index) = select {
+        tab.select_search_match(Some(index));
+    }
 }
