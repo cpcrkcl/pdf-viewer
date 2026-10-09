@@ -106,44 +106,11 @@ pub fn redact(bytes: &[u8], regions: &[RedactionRegion], reason_label: Option<&s
 fn scrub_document(document: &mut LoDocument, redacted_pages: &[lopdf::ObjectId]) {
     document.trailer.remove(b"Info");
     let Ok(catalog_id) = document.trailer.get(b"Root").and_then(Object::as_reference) else { return };
-    let surviving_fields = {
-        let remaining: Vec<_> = structure::page_ids(document).into_iter().filter(|page| !redacted_pages.contains(page)).collect();
-        structure::root_fields_for_pages(document, &remaining)
-    };
-    let acro_form = document
-        .get_object(catalog_id)
-        .and_then(Object::as_dict)
-        .ok()
-        .and_then(|catalog| catalog.get(b"AcroForm").ok().cloned());
+    let remaining: Vec<_> = structure::page_ids(document).into_iter().filter(|page| !redacted_pages.contains(page)).collect();
+    structure::retain_form_fields_on_pages(document, &remaining);
     if let Ok(catalog) = document.get_object_mut(catalog_id).and_then(Object::as_dict_mut) {
         for key in [b"Metadata".as_slice(), b"Outlines", b"StructTreeRoot", b"MarkInfo", b"Names", b"OpenAction", b"AA", b"PageLabels", b"Dests", b"PieceInfo"] {
             catalog.remove(key);
-        }
-        if surviving_fields.is_empty() {
-            catalog.remove(b"AcroForm");
-        }
-    }
-    if !surviving_fields.is_empty() {
-        let fields: Vec<Object> = surviving_fields.into_iter().map(Object::Reference).collect();
-        match acro_form {
-            Some(Object::Reference(id)) => {
-                if let Ok(form) = document.get_object_mut(id).and_then(Object::as_dict_mut) {
-                    form.set("Fields", fields);
-                    form.remove(b"XFA");
-                }
-            }
-            Some(Object::Dictionary(_)) => {
-                if let Ok(form) = document
-                    .get_object_mut(catalog_id)
-                    .and_then(Object::as_dict_mut)
-                    .and_then(|catalog| catalog.get_mut(b"AcroForm"))
-                    .and_then(Object::as_dict_mut)
-                {
-                    form.set("Fields", fields);
-                    form.remove(b"XFA");
-                }
-            }
-            _ => {}
         }
     }
     // Pages that weren't redacted may still point into the removed structure tree.

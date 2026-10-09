@@ -20,6 +20,9 @@ window and quit (see `crates/app/src/debug_capture.rs` for scenario flags).
 - `crates/pdf-core`: lopdf for the working copy and every structural edit;
   PDFium (pdfium-render) for rendering, text, search and output validation.
   Revisions are validated byte snapshots, as in the Swift editor.
+- `crates/pdf-ocr`: Apple Vision text recognition and page-edge detection
+  (objc2-vision), scan enhancement with `image`/`imageproc`, and the
+  invisible text layer for searchable pages.
 - `crates/app`: egui/eframe UI.
 
 ## Done
@@ -35,20 +38,21 @@ window and quit (see `crates/app/src/debug_capture.rs` for scenario flags).
   signatures, signature and stamp libraries, owned-annotation navigator.
   Swift `pdfviewer:` IDs and signature keys are kept, so documents round-trip.
 - AcroForm fill, validate, reset, JSON value export, flattening.
-- Redaction core (`redaction.rs`): tested, **not yet wired into the UI**.
+- Permanent redaction: redact tool, marked search matches, reason label,
+  confirmation, applied as one undoable revision.
+- OCR & scan enhancement (Pages ▸ OCR & Scan Enhancement…, or the toolbar
+  OCR button): selected or all pages, language, minimum confidence, Clean
+  Scan (perspective correction, shadow flattening, whitening, sharpening),
+  raster quality, crop margins, double-page splitting, live before/after
+  preview, cancellable progress. The text layer is a Type0 font whose CIDs
+  are Unicode values, so any BMP script is searchable.
 
 ## Remaining
 
-1. Redaction UI: a redact tool that draws regions, "mark search matches for
-   redaction" (the checkboxes already exist in Search results), reason label,
-   and a confirmation dialog, applied via `editor.apply_processed_document`.
-2. OCR via Vision (`objc2-vision`) and scan enhancement with `image`/`imageproc`
-   (deskew, whitening, crop, split); `raster.rs` has the page-replacement
-   helpers.
-3. Conversion: PDF to PNG/JPEG/TIFF and text, images to PDF, and the Office
+1. Conversion: PDF to PNG/JPEG/TIFF and text, images to PDF, and the Office
    helper as a small Rust binary.
-4. Printing (NSPrintOperation through objc2), a native macOS menu bar, and
+2. Printing (NSPrintOperation through objc2), a native macOS menu bar, and
    Finder open-file events.
-5. Packaging: an `.app` bundle with `libpdfium.dylib` in `Contents/Frameworks`,
+3. Packaging: an `.app` bundle with `libpdfium.dylib` in `Contents/Frameworks`,
    entitlements, and an updated `scripts/package-release.sh`.
-6. Remove the Swift sources and the Xcode project once at parity.
+4. Remove the Swift sources and the Xcode project once at parity.

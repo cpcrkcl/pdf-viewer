@@ -10,6 +10,7 @@ mod interaction;
 mod libraries_ui;
 #[cfg(target_os = "macos")]
 mod macos;
+mod ocr_ui;
 mod reader_state;
 mod reader_view;
 mod redaction_ui;

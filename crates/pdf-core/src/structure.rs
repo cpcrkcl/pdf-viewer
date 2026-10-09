@@ -290,6 +290,39 @@ fn page_ids_from_kids(document: &Document) -> CoreResult<Vec<ObjectId>> {
         .collect()
 }
 
+/// Keeps only the AcroForm fields with a widget on `pages`, dropping the
+/// form (and any XFA) entirely when none survive. Used after pages were
+/// replaced by images, whose widgets no longer exist.
+pub fn retain_form_fields_on_pages(document: &mut Document, pages: &[ObjectId]) {
+    let Ok(catalog_id) = document.trailer.get(b"Root").and_then(Object::as_reference) else { return };
+    let surviving: Vec<Object> = root_fields_for_pages(document, pages).into_iter().map(Object::Reference).collect();
+    let acro_form = document
+        .get_object(catalog_id)
+        .and_then(Object::as_dict)
+        .ok()
+        .and_then(|catalog| catalog.get(b"AcroForm").ok().cloned());
+    if surviving.is_empty() {
+        if let Ok(catalog) = document.get_object_mut(catalog_id).and_then(Object::as_dict_mut) {
+            catalog.remove(b"AcroForm");
+        }
+        return;
+    }
+    let form = match acro_form {
+        Some(Object::Reference(id)) => document.get_object_mut(id).and_then(Object::as_dict_mut).ok(),
+        Some(Object::Dictionary(_)) => document
+            .get_object_mut(catalog_id)
+            .and_then(Object::as_dict_mut)
+            .and_then(|catalog| catalog.get_mut(b"AcroForm"))
+            .and_then(Object::as_dict_mut)
+            .ok(),
+        _ => None,
+    };
+    if let Some(form) = form {
+        form.set("Fields", surviving);
+        form.remove(b"XFA");
+    }
+}
+
 const IMPORTED_FIELDS_KEY: &str = "PDFViewerImportedFields";
 
 /// Top-level AcroForm field ids that own a widget on any of `pages`.

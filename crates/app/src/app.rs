@@ -2,6 +2,8 @@
 
 use std::collections::{BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, TryRecvError, channel};
 
 use egui::{Align, Align2, Color32, Key, KeyboardShortcut, Layout, Modifiers, RichText, Ui};
@@ -21,6 +23,7 @@ use crate::annotation_ui::{self, AnnotationRequest, AnnotationTool, StampChoice}
 use crate::document_tab::Tool;
 use crate::forms_ui::{self, FormRequest};
 use crate::libraries_ui::{LibraryDialog, LibraryKind, LibraryOutcome};
+use crate::ocr_ui::{OcrSheet, SheetOutcome};
 use crate::redaction_ui::{self, RedactionRequest};
 use crate::{interaction, reader_view, sidebar};
 
@@ -55,6 +58,19 @@ enum Job {
         tab: u64,
         then: AfterExport,
     },
+    Processing {
+        receiver: Receiver<ProcessingMessage>,
+        cancel: Arc<AtomicBool>,
+        progress: Option<pdf_ocr::OcrProgress>,
+        tab: u64,
+        /// The editor generation processing started from.
+        generation: u64,
+    },
+}
+
+enum ProcessingMessage {
+    Progress(pdf_ocr::OcrProgress),
+    Finished(Result<pdf_ocr::OcrResult, pdf_ocr::OcrError>),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -98,6 +114,7 @@ enum Dialog {
     ConfirmRedaction {
         tab: u64,
     },
+    Ocr(Box<OcrSheet>),
     Note {
         tab: u64,
         page: usize,
@@ -238,7 +255,71 @@ impl PdfViewerApp {
                 Ok(Err(message)) => self.error(message),
                 Ok(Ok(result)) => self.finish_export(result, tab, then),
             },
+            Job::Processing { receiver, cancel, mut progress, tab, generation } => loop {
+                match receiver.try_recv() {
+                    Ok(ProcessingMessage::Progress(update)) => progress = Some(update),
+                    Err(TryRecvError::Empty) => {
+                        self.job = Some(Job::Processing { receiver, cancel, progress, tab, generation });
+                        break;
+                    }
+                    Err(TryRecvError::Disconnected) => break self.error("Local processing stopped unexpectedly."),
+                    Ok(ProcessingMessage::Finished(Err(pdf_ocr::OcrError::Cancelled))) => break,
+                    Ok(ProcessingMessage::Finished(Err(error))) => break self.error(error.to_string()),
+                    Ok(ProcessingMessage::Finished(Ok(result))) => break self.finish_processing(result, tab, generation),
+                }
+            },
         }
+    }
+
+    // MARK: OCR
+
+    fn request_ocr(&mut self) {
+        let Some(tab) = self.tabs.get(self.active) else { return };
+        if !tab.session.security.allows_document_changes() {
+            return self.error(CoreError::PermissionDenied.to_string());
+        }
+        let id = tab.id;
+        self.dialogs.push(Dialog::Ocr(Box::new(OcrSheet::new(id))));
+    }
+
+    fn start_processing(&mut self, tab_id: u64, options: pdf_ocr::OcrOptions) {
+        let Some(index) = self.tab_index(tab_id) else { return };
+        let tab = &self.tabs[index];
+        let data = tab.pdf_data();
+        let generation = tab.session.editor.generation();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let (sender, receiver) = channel();
+        let worker_cancel = Arc::clone(&cancel);
+        std::thread::spawn(move || {
+            let progress_sender = sender.clone();
+            let result = pdf_ocr::process(&data, &options, &worker_cancel, |progress| {
+                let _ = progress_sender.send(ProcessingMessage::Progress(progress));
+            });
+            let _ = sender.send(ProcessingMessage::Finished(result));
+        });
+        self.job = Some(Job::Processing { receiver, cancel, progress: None, tab: tab_id, generation });
+    }
+
+    fn finish_processing(&mut self, result: pdf_ocr::OcrResult, tab: u64, generation: u64) {
+        let Some(index) = self.tab_index(tab) else { return };
+        let tab = &mut self.tabs[index];
+        if tab.session.editor.generation() != generation {
+            return self.error("The working PDF changed while local processing was running. Review the latest revision and try again.");
+        }
+        let added = result.source_page_indexes.len().saturating_sub(tab.session.editor.page_count());
+        if let Err(error) = tab.session.editor.apply_processed_document(result.pdf_data, Some(&result.source_page_indexes)) {
+            return self.error(error.to_string());
+        }
+        tab.after_mutation(None);
+        let lines = result.recognized_lines;
+        let mut message = format!(
+            "Processed the document locally. {lines} line{} of text recognized.",
+            if lines == 1 { "" } else { "s" }
+        );
+        if added > 0 {
+            message.push_str(&format!(" {added} double page{} split.", if added == 1 { " was" } else { "s were" }));
+        }
+        self.dialogs.push(Dialog::Info(message));
     }
 
     // MARK: Export
@@ -962,6 +1043,10 @@ impl PdfViewerApp {
         if ui.add_enabled(selected.len() < count, egui::Button::new("Delete Selected Pages…")).clicked() {
             self.request_delete_selected();
         }
+        ui.separator();
+        if ui.button("OCR & Scan Enhancement…").clicked() {
+            self.request_ocr();
+        }
     }
 
     fn tab_strip(&mut self, ui: &mut Ui) {
@@ -990,6 +1075,7 @@ impl PdfViewerApp {
 
     fn toolbar(&mut self, ui: &mut Ui) {
         let Some(tab) = self.tabs.get_mut(self.active) else { return };
+        let mut wants_ocr = false;
         ui.horizontal(|ui| {
             if ui.button("☰").on_hover_text("Toggle Sidebar").clicked() {
                 tab.reader.is_sidebar_visible = !tab.reader.is_sidebar_visible;
@@ -1060,6 +1146,9 @@ impl PdfViewerApp {
             if ui.selectable_label(tab.forms.visible, "Form").on_hover_text("Fill Form Fields").clicked() {
                 tab.forms.visible = !tab.forms.visible;
             }
+            if ui.button("OCR").on_hover_text("OCR & Scan Enhancement").clicked() {
+                wants_ocr = true;
+            }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 search_field(ui, tab);
                 if tab.session.security.is_encrypted {
@@ -1070,6 +1159,9 @@ impl PdfViewerApp {
                 }
             });
         });
+        if wants_ocr {
+            self.request_ocr();
+        }
     }
 
     fn empty_state(&mut self, ui: &mut Ui) {
@@ -1106,6 +1198,11 @@ impl PdfViewerApp {
                 true,
             ),
             Job::Exporting { .. } => ("Exporting and verifying…".to_owned(), false),
+            Job::Processing { .. } => ("Processing pages locally…".to_owned(), true),
+        };
+        let progress = match job {
+            Job::Processing { progress, .. } => Some(progress.map_or((0, 1), |p| (p.completed, p.total.max(1)))),
+            _ => None,
         };
         let mut cancel = false;
         egui::Modal::new(egui::Id::new("job-overlay")).show(ctx, |ui| {
@@ -1114,6 +1211,9 @@ impl PdfViewerApp {
                 ui.spinner();
                 ui.label(title);
             });
+            if let Some((completed, total)) = progress {
+                ui.add(egui::ProgressBar::new(completed as f32 / total as f32).text(format!("Processed {completed} of {total} pages")));
+            }
             if cancellable {
                 ui.add_space(8.0);
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -1124,8 +1224,12 @@ impl PdfViewerApp {
             }
         });
         if cancel {
-            // The worker finishes in the background; its result is dropped.
-            self.job = None;
+            match &self.job {
+                // Stop between pages; the worker reports `Cancelled`.
+                Some(Job::Processing { cancel, .. }) => cancel.store(true, Ordering::Relaxed),
+                // The worker finishes in the background; its result is dropped.
+                _ => self.job = None,
+            }
         }
         ctx.request_repaint_after(std::time::Duration::from_millis(100));
     }
@@ -1356,6 +1460,23 @@ impl PdfViewerApp {
                             }));
                         }
                     });
+                }
+                Dialog::Ocr(sheet) => {
+                    let Some(index) = self.tab_index(sheet.tab) else {
+                        keep = false;
+                        return;
+                    };
+                    let tab = &self.tabs[index];
+                    let (data, selected, count) = (tab.pdf_data(), tab.reader.selected_pages_vec(), tab.session.editor.page_count());
+                    match sheet.show(ui, &data, &selected, count) {
+                        SheetOutcome::Open => {}
+                        SheetOutcome::Cancel => keep = false,
+                        SheetOutcome::Start(options) => {
+                            keep = false;
+                            let tab = sheet.tab;
+                            follow_up = Some(Box::new(move |app: &mut Self| app.start_processing(tab, options)));
+                        }
+                    }
                 }
                 Dialog::Info(message) => {
                     ui.label(message.as_str());
@@ -1602,6 +1723,10 @@ impl eframe::App for PdfViewerApp {
                         rect: pdf_core::geometry::PdfBox::new(60.0, 690.0, 560.0, 740.0),
                     });
                     let _ = crate::redaction_ui::apply(tab);
+                }
+                if std::mem::take(&mut capture.ocr) {
+                    let id = tab.id;
+                    self.dialogs.push(Dialog::Ocr(Box::new(OcrSheet::new(id))));
                 }
                 if std::mem::take(&mut capture.forms) {
                     tab.forms.visible = true;
