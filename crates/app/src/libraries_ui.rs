@@ -6,7 +6,7 @@ use egui::{Color32, CornerRadius, Pos2, Rect, Sense, Shape, Stroke, StrokeKind, 
 use pdf_core::signatures::{SignatureLibrary, StoredSignature};
 use uuid::Uuid;
 
-use crate::theme::mocha;
+use crate::theme;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LibraryKind {
@@ -152,7 +152,7 @@ fn draw_signature(ui: &mut Ui, drawing: &mut Drawing, library: &mut SignatureLib
         let points: Vec<Pos2> = stroke.iter().map(|(x, y)| rect.min + vec2(*x, *y)).collect();
         painter.add(Shape::line(points, Stroke::new(3.0, Color32::BLACK)));
     }
-    painter.rect_stroke(rect, CornerRadius::same(4), Stroke::new(1.0, mocha::SURFACE2), StrokeKind::Outside);
+    painter.rect_stroke(rect, CornerRadius::same(4), Stroke::new(1.0, theme::colors().hairline), StrokeKind::Outside);
     ui.horizontal(|ui| {
         ui.label("Name");
         ui.text_edit_singleline(&mut drawing.name);
@@ -166,7 +166,7 @@ fn draw_signature(ui: &mut Ui, drawing: &mut Drawing, library: &mut SignatureLib
         if ui.button("Cancel").clicked() {
             finished = true;
         }
-        if ui.add_enabled(drawing.strokes.iter().any(|s| s.len() >= 2), egui::Button::new("Save")).clicked() {
+        if ui.add_enabled(drawing.strokes.iter().any(|s| s.len() >= 2), theme::primary("Save")).clicked() {
             outcome = match library.create_from_drawing(&drawing.strokes, CANVAS, &drawing.name) {
                 Ok(stored) => LibraryOutcome::Chose(stored.id),
                 Err(error) => LibraryOutcome::Error(error.to_string()),

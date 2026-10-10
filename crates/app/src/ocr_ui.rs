@@ -6,7 +6,7 @@ use std::sync::mpsc::{Receiver, TryRecvError, channel};
 use egui::{Color32, RichText, TextureHandle, Ui};
 use pdf_ocr::{Enhancement, Language, OcrError, OcrOptions, Preview, RasterQuality};
 
-use crate::theme::mocha;
+use crate::theme;
 
 const CROP_CHOICES: [(f32, &str); 4] = [(0.0, "None"), (2.0, "2% per edge"), (5.0, "5% per edge"), (10.0, "10% per edge")];
 
@@ -192,7 +192,7 @@ impl OcrSheet {
                 RichText::new(
                     "ⓘ Processed pages are rasterized at high resolution. Existing form fields and annotations on those pages become part of the page image. The operation is undoable before export.",
                 )
-                .color(mocha::SUBTEXT0),
+                .color(theme::colors().muted),
             );
         });
 
@@ -227,7 +227,7 @@ impl OcrSheet {
             Err(message) => {
                 ui.horizontal(|ui| {
                     ui.set_min_height(height);
-                    ui.label(RichText::new(format!("⚠ {message}")).color(mocha::YELLOW));
+                    ui.label(RichText::new(format!("⚠ {message}")).color(theme::colors().warning));
                 });
             }
         }
@@ -240,7 +240,7 @@ impl OcrSheet {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let options = self.options(&pages);
                 let ready = !pages.is_empty() && options.has_work();
-                if ui.add_enabled(ready, egui::Button::new(RichText::new("Process Locally").strong())).clicked() {
+                if ui.add_enabled(ready, theme::primary("Process Locally")).clicked() {
                     outcome = SheetOutcome::Start(options);
                 }
             });

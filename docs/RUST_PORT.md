@@ -23,7 +23,16 @@ window and quit (see `crates/app/src/debug_capture.rs` for scenario flags).
 - `crates/pdf-ocr`: Apple Vision text recognition and page-edge detection
   (objc2-vision), scan enhancement with `image`/`imageproc`, and the
   invisible text layer for searchable pages.
-- `crates/app`: egui/eframe UI.
+- `crates/app`: egui/eframe UI. `theme.rs` holds the Day/Night/Sepia chrome
+  palettes (the chrome follows the reader theme; teal is the only accent),
+  `icons.rs` the painter-drawn icons. The toolbar is drawn into the macOS
+  title bar (full-size content view), inset for the window buttons. On macOS, `native.rs` provides the AppKit menu
+  bar, Finder open/quit events and PDFKit printing; `commands.rs` and
+  `app_commands.rs` route menu items and shortcuts through one `perform`.
+  winit 0.30 owns NSApplication's delegate (replacing it panics), so
+  `main.rs` builds the event loop itself and `extend_app_delegate` adds
+  `application:openURLs:` and `applicationShouldTerminate:` to winit's
+  delegate class before launch.
 
 ## Done
 
@@ -50,13 +59,27 @@ window and quit (see `crates/app/src/debug_capture.rs` for scenario flags).
   (never overwriting, all-or-nothing), PDF to UTF-8 text, images (PNG, JPEG,
   TIFF, HEIC via `sips`) to a new PDF, and Office to PDF through the
   `PDFViewerOfficeHelper` binary and a user-chosen LibreOffice `soffice`.
+- Native macOS: full menu bar with live enabled/checked states and Open
+  Recent; Cut/Copy/Paste/Select All reach egui text fields; Print… (⌘P)
+  prints the working copy through PDFKit's print sheet, honouring print
+  permissions; PDFs opened from Finder (at launch or while running, several
+  at once) open in tabs; quitting from the Dock or at logout exits at once
+  when nothing is unexported and otherwise asks first. Verified by driving
+  the menu bar through Accessibility; there are no automated UI tests.
+
+## Performance and workflow additions
+
+See [PERFORMANCE_AND_WORKFLOWS.md](PERFORMANCE_AND_WORKFLOWS.md) for measured
+performance changes, command palette/split reader/page organization, session
+recovery, encrypted undo archives, and the local batch/watch companion.
 
 ## Remaining
 
-1. Printing (NSPrintOperation through objc2), a native macOS menu bar, and
-   Finder open-file events.
-2. Packaging: an `.app` bundle with `libpdfium.dylib` in `Contents/Frameworks`,
+1. Packaging: an `.app` bundle with `libpdfium.dylib` in `Contents/Frameworks`,
    `PDFViewerOfficeHelper` next to the app binary in `Contents/MacOS` (it
    should get its own sandbox entitlements: user-selected files, no network),
-   entitlements, and an updated `scripts/package-release.sh`.
-3. Remove the Swift sources and the Xcode project once at parity.
+   entitlements, and an updated `scripts/package-release.sh`. Bundle PDFium
+   inside the app: a bundled app that loads it from `vendor/` under
+   `~/Documents` blocks on a privacy prompt at launch. Declare PDF in
+   `CFBundleDocumentTypes` so Finder can open PDFs with the app.
+2. Remove the Swift sources and the Xcode project once at parity.

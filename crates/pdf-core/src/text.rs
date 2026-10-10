@@ -1,6 +1,6 @@
 //! Page text, search, selection and links, extracted with PDFium.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use pdfium_render::prelude::*;
 
@@ -27,21 +27,26 @@ impl PageText {
 
     /// The index of the character nearest `point` (user space).
     pub fn char_at(&self, point: (f32, f32)) -> Option<usize> {
-        let mut best: Option<(usize, f32)> = None;
-        for (index, rect) in self.boxes.iter().enumerate() {
-            let Some(rect) = rect else { continue };
-            let distance = rect.distance_to(point);
-            if best.is_none_or(|(_, current)| distance < current) {
-                best = Some((index, distance));
-            }
-        }
-        best.filter(|(_, distance)| *distance < 24.0).map(|(index, _)| index)
+        self.nearest_char(point)
+            .filter(|(_, distance)| *distance < 24.0)
+            .map(|(index, _)| index)
+    }
+
+    pub fn nearest_char(&self, point: (f32, f32)) -> Option<(usize, f32)> {
+        self.boxes
+            .iter()
+            .enumerate()
+            .filter_map(|(index, rect)| rect.map(|rect| (index, rect.distance_to(point))))
+            .min_by(|(_, a), (_, b)| a.total_cmp(b))
     }
 
     /// One box per line covering chars `start..end`.
     pub fn line_boxes(&self, start: usize, end: usize) -> Vec<PdfBox> {
         let mut lines: Vec<PdfBox> = Vec::new();
-        for rect in self.boxes[start.min(self.boxes.len())..end.min(self.boxes.len())].iter().flatten() {
+        for rect in self.boxes[start.min(self.boxes.len())..end.min(self.boxes.len())]
+            .iter()
+            .flatten()
+        {
             match lines.last_mut() {
                 Some(line) if same_line(line, rect) => *line = line.union(rect),
                 _ => lines.push(*rect),
@@ -51,7 +56,9 @@ impl PageText {
     }
 
     pub fn substring(&self, start: usize, end: usize) -> String {
-        self.chars[start.min(self.chars.len())..end.min(self.chars.len())].iter().collect()
+        self.chars[start.min(self.chars.len())..end.min(self.chars.len())]
+            .iter()
+            .collect()
     }
 }
 
@@ -83,7 +90,10 @@ pub struct PageInfo {
 pub fn page_infos(bytes: &[u8]) -> CoreResult<Vec<PageInfo>> {
     let document = engine::load(bytes.to_vec(), None)?;
     let structure = crate::structure::parse(bytes).ok();
-    let page_ids = structure.as_ref().map(crate::structure::page_ids).unwrap_or_default();
+    let page_ids = structure
+        .as_ref()
+        .map(crate::structure::page_ids)
+        .unwrap_or_default();
     document
         .pages()
         .iter()
@@ -111,7 +121,8 @@ pub fn page_infos(bytes: &[u8]) -> CoreResult<Vec<PageInfo>> {
                         if let Some(uri) = action.as_uri_action() {
                             LinkTarget::Uri(uri.uri().ok()?)
                         } else {
-                            let destination = action.as_local_destination_action()?.destination().ok()?;
+                            let destination =
+                                action.as_local_destination_action()?.destination().ok()?;
                             LinkTarget::Page(destination.page_index().ok()? as usize)
                         }
                     };
@@ -137,21 +148,68 @@ fn rotation_degrees(rotation: PdfPageRenderRotation) -> i64 {
 }
 
 pub fn to_box(rect: &PdfRect) -> PdfBox {
-    PdfBox::new(rect.left().value, rect.bottom().value, rect.right().value, rect.top().value)
+    PdfBox::new(
+        rect.left().value,
+        rect.bottom().value,
+        rect.right().value,
+        rect.top().value,
+    )
 }
 
 /// Extracts every page's characters. Returns `Cancelled` if `cancel` is set.
 pub fn build_text_index(bytes: &[u8], cancel: &AtomicBool) -> CoreResult<Vec<PageText>> {
+    let mut pages = Vec::new();
+    stream_text_index(bytes, cancel, &AtomicUsize::new(0), |index, text| {
+        if pages.len() <= index {
+            pages.resize_with(index + 1, PageText::default);
+        }
+        pages[index] = text;
+        true
+    })?;
+    Ok(pages)
+}
+
+/// Publishes one page at a time, following the latest viewport priority.
+/// Returning false from `publish` stops work when the consumer closes.
+pub fn stream_text_index(
+    bytes: &[u8],
+    cancel: &AtomicBool,
+    priority: &AtomicUsize,
+    mut publish: impl FnMut(usize, PageText) -> bool,
+) -> CoreResult<()> {
     let document = engine::load(bytes.to_vec(), None)?;
-    let mut pages = Vec::with_capacity(document.pages().len() as usize);
-    for page in document.pages().iter() {
+    let count = document.pages().len() as usize;
+    let mut visited = vec![false; count];
+    let mut next = 0;
+    for _ in 0..count {
         if cancel.load(Ordering::Relaxed) {
             return Err(CoreError::Cancelled);
         }
+        while next < count && visited[next] {
+            next += 1;
+        }
+        let preferred = priority.load(Ordering::Relaxed);
+        let index = if preferred < count && !visited[preferred] {
+            preferred
+        } else {
+            next
+        };
+        let page = document
+            .pages()
+            .get(index as PdfPageIndex)
+            .map_err(|_| CoreError::InvalidPdf)?;
         let mut text = PageText::default();
         if let Ok(page_text) = page.text() {
+            let mut previous_cr = false;
             for character in page_text.chars().iter() {
-                let Some(value) = character.unicode_char() else { continue };
+                let Some(value) = character.unicode_char() else {
+                    continue;
+                };
+                if value == '\n' && previous_cr {
+                    previous_cr = false;
+                    continue;
+                }
+                previous_cr = value == '\r';
                 let generated = character.is_generated().unwrap_or(false);
                 let rect = if generated || value.is_whitespace() {
                     None
@@ -162,9 +220,12 @@ pub fn build_text_index(bytes: &[u8], cancel: &AtomicBool) -> CoreResult<Vec<Pag
                 text.boxes.push(rect);
             }
         }
-        pages.push(text);
+        visited[index] = true;
+        if !publish(index, text) {
+            return Err(CoreError::Cancelled);
+        }
     }
-    Ok(pages)
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -196,7 +257,12 @@ pub enum SearchOutcome {
     TextUnavailable,
 }
 
-pub fn search(pages: &[PageText], query: &str, options: SearchOptions, cancel: &AtomicBool) -> CoreResult<SearchOutcome> {
+pub fn search(
+    pages: &[PageText],
+    query: &str,
+    options: SearchOptions,
+    cancel: &AtomicBool,
+) -> CoreResult<SearchOutcome> {
     let needle: Vec<char> = fold(query.trim(), options.case_sensitive);
     if needle.is_empty() {
         return Ok(SearchOutcome::NoMatches);
@@ -209,13 +275,19 @@ pub fn search(pages: &[PageText], query: &str, options: SearchOptions, cancel: &
         if cancel.load(Ordering::Relaxed) {
             return Err(CoreError::Cancelled);
         }
-        let haystack: Vec<char> = page.chars.iter().map(|c| fold_char(*c, options.case_sensitive)).collect();
+        let haystack: Vec<char> = page
+            .chars
+            .iter()
+            .map(|c| fold_char(*c, options.case_sensitive))
+            .collect();
         let mut start = 0;
         while start + needle.len() <= haystack.len() {
             if haystack[start..start + needle.len()] == needle[..] {
                 let end = start + needle.len();
                 let bounded = !options.whole_words
-                    || (!start.checked_sub(1).is_some_and(|before| is_word(page.chars[before]))
+                    || (!start
+                        .checked_sub(1)
+                        .is_some_and(|before| is_word(page.chars[before]))
                         && !page.chars.get(end).is_some_and(|after| is_word(*after)));
                 if bounded {
                     let boxes = page.line_boxes(start, end);
@@ -253,7 +325,11 @@ fn fold(text: &str, case_sensitive: bool) -> Vec<char> {
 /// Case folding plus diacritic folding for Latin letters, character for
 /// character so match offsets stay aligned with page text.
 fn fold_char(c: char, case_sensitive: bool) -> char {
-    let c = if case_sensitive { c } else { c.to_lowercase().next().unwrap_or(c) };
+    let c = if case_sensitive {
+        c
+    } else {
+        c.to_lowercase().next().unwrap_or(c)
+    };
     let base = match c {
         'à' | 'á' | 'â' | 'ã' | 'ä' | 'å' | 'ā' => 'a',
         'À' | 'Á' | 'Â' | 'Ã' | 'Ä' | 'Å' | 'Ā' => 'A',
@@ -282,4 +358,48 @@ fn fold_char(c: char, case_sensitive: bool) -> char {
         other => other,
     };
     base
+}
+
+#[cfg(test)]
+mod incremental_tests {
+    use super::*;
+    #[test]
+    fn viewport_page_is_published_first_and_can_change_priority() {
+        let bytes = crate::testing::numbered_pdf(4);
+        let priority = AtomicUsize::new(3);
+        let mut order = Vec::new();
+        stream_text_index(&bytes, &AtomicBool::new(false), &priority, |index, text| {
+            assert!(text.has_text());
+            order.push(index);
+            priority.store(2, Ordering::Relaxed);
+            true
+        })
+        .unwrap();
+        assert_eq!(order, vec![3, 2, 0, 1]);
+    }
+    #[test]
+    #[ignore = "manual performance benchmark"]
+    fn text_availability_benchmark() {
+        let bytes = crate::testing::numbered_pdf(2000);
+        let start = std::time::Instant::now();
+        let pages = build_text_index(&bytes, &AtomicBool::new(false)).unwrap();
+        let full = start.elapsed();
+        std::hint::black_box(pages);
+        let start = std::time::Instant::now();
+        let result = stream_text_index(
+            &bytes,
+            &AtomicBool::new(false),
+            &AtomicUsize::new(1999),
+            |index, text| {
+                assert_eq!(index, 1999);
+                std::hint::black_box(text);
+                false
+            },
+        );
+        assert_eq!(result, Err(CoreError::Cancelled));
+        eprintln!(
+            "2000-page full index: {full:?}; viewport page available: {:?}",
+            start.elapsed()
+        );
+    }
 }

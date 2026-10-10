@@ -5,7 +5,7 @@ use pdf_core::text::LinkTarget;
 
 use crate::document_tab::{DocumentTab, TextSelection, Tool};
 use crate::reader_view::ReaderResponse;
-use crate::theme::mocha;
+use crate::theme;
 
 pub enum InteractionAction {
     None,
@@ -18,14 +18,21 @@ pub const SEARCH_ACTIVE: Color32 = Color32::from_rgba_premultiplied(170, 90, 20,
 pub const TEXT_SELECTION: Color32 = Color32::from_rgba_premultiplied(40, 70, 130, 90);
 
 /// Text selection and link activation for the Select Text tool.
-pub fn handle_select_text(ctx: &egui::Context, tab: &mut DocumentTab, response: &ReaderResponse) -> InteractionAction {
+pub fn handle_select_text(
+    ctx: &egui::Context,
+    tab: &mut DocumentTab,
+    response: &ReaderResponse,
+) -> InteractionAction {
     if tab.tool != Tool::SelectText {
         return InteractionAction::None;
     }
     let link_at = |tab: &DocumentTab, page: usize, point: (f32, f32)| {
-        tab.pages
-            .get(page)
-            .and_then(|info| info.links.iter().find(|link| link.rect.contains(point)).cloned())
+        tab.pages.get(page).and_then(|info| {
+            info.links
+                .iter()
+                .find(|link| link.rect.contains(point))
+                .cloned()
+        })
     };
     if let Some(hover) = response.hover {
         if link_at(tab, hover.page, hover.point).is_some() {
@@ -42,22 +49,27 @@ pub fn handle_select_text(ctx: &egui::Context, tab: &mut DocumentTab, response: 
     if let Some(start) = response.drag_start {
         tab.selection = None;
         if let Some(text) = tab.text_index(ctx)
-            && let Some(index) = text.get(start.page).and_then(|page| page.char_at(start.point))
+            && let Some(index) = text
+                .get(start.page)
+                .and_then(|page| page.char_at(start.point))
         {
             tab.selection = Some(TextSelection {
                 page: start.page,
                 anchor: index,
                 focus: index,
+                focus_page: start.page,
             });
         }
     }
-    if let Some(current) = response.drag_current
+    if let Some(current) = response.text_drag_current
         && let Some(text) = tab.text_index(ctx)
         && let Some(selection) = tab.selection.as_mut()
-        && selection.page == current.page
-        && let Some(index) = text.get(current.page).and_then(|page| page.char_at(current.point))
+        && let Some(index) = text
+            .get(current.page)
+            .and_then(|page| page.nearest_char(current.point).map(|(index, _)| index))
     {
         selection.focus = index;
+        selection.focus_page = current.page;
     }
 
     if let Some(click) = response.click {
@@ -69,7 +81,11 @@ pub fn handle_select_text(ctx: &egui::Context, tab: &mut DocumentTab, response: 
                 }
                 LinkTarget::Page(_) => InteractionAction::None,
                 LinkTarget::Uri(uri) => {
-                    let scheme = uri.split(':').next().unwrap_or_default().to_ascii_lowercase();
+                    let scheme = uri
+                        .split(':')
+                        .next()
+                        .unwrap_or_default()
+                        .to_ascii_lowercase();
                     if matches!(scheme.as_str(), "http" | "https" | "mailto") {
                         InteractionAction::ConfirmExternalLink(uri)
                     } else {
@@ -98,33 +114,113 @@ pub fn handle_select_text(ctx: &egui::Context, tab: &mut DocumentTab, response: 
             page: double.page,
             anchor: start,
             focus: end,
+            focus_page: double.page,
+        });
+    }
+    if let Some(triple) = response.triple_click
+        && let Some(text) = tab.text_index(ctx)
+        && let Some(page) = text.get(triple.page)
+        && let Some(index) = page.char_at(triple.point)
+    {
+        let (start, end) = paragraph_range(&page.chars, index);
+        tab.selection = Some(TextSelection {
+            page: triple.page,
+            anchor: start,
+            focus: end,
+            focus_page: triple.page,
         });
     }
     InteractionAction::None
 }
 
 /// Search hits and the text selection.
-pub fn paint_text_overlays(painter: &Painter, ctx: &egui::Context, tab: &mut DocumentTab, response: &ReaderResponse) {
+pub fn paint_text_overlays(
+    painter: &Painter,
+    ctx: &egui::Context,
+    tab: &mut DocumentTab,
+    response: &ReaderResponse,
+) {
     let active = tab.search.active;
     for (index, found) in tab.search.matches().iter().enumerate() {
-        let Some(view) = response.page(found.page) else { continue };
-        let fill = if Some(index) == active { SEARCH_ACTIVE } else { SEARCH_HIGHLIGHT };
+        let Some(view) = response.page(found.page) else {
+            continue;
+        };
+        let fill = if Some(index) == active {
+            SEARCH_ACTIVE
+        } else {
+            SEARCH_HIGHLIGHT
+        };
         for rect in &found.boxes {
             let screen = view.box_to_screen(rect).expand(1.0);
             painter.rect_filled(screen, CornerRadius::same(2), fill);
             if tab.search.marked.contains(&index) {
-                painter.rect_stroke(screen, CornerRadius::same(2), Stroke::new(1.5, mocha::RED), StrokeKind::Outside);
+                painter.rect_stroke(
+                    screen,
+                    CornerRadius::same(2),
+                    Stroke::new(1.5, theme::colors().danger),
+                    StrokeKind::Outside,
+                );
             }
         }
     }
     if let Some(selection) = tab.selection.clone()
-        && let Some(view) = response.page(selection.page)
         && let Some(text) = tab.text_index(ctx)
-        && let Some(page) = text.get(selection.page)
     {
-        let (start, end) = selection.range();
-        for rect in page.line_boxes(start, end) {
-            painter.rect_filled(view.box_to_screen(&rect), CornerRadius::ZERO, TEXT_SELECTION);
+        for view in &response.pages {
+            let Some(page) = text.get(view.index) else {
+                continue;
+            };
+            let Some((start, end)) = selection.range_on_page(view.index, page.chars.len()) else {
+                continue;
+            };
+            for rect in page.line_boxes(start, end) {
+                painter.rect_filled(
+                    view.box_to_screen(&rect),
+                    CornerRadius::ZERO,
+                    TEXT_SELECTION,
+                );
+            }
         }
+    }
+}
+
+fn paragraph_range(chars: &[char], index: usize) -> (usize, usize) {
+    let mut start = index;
+    while start > 0 {
+        if start >= 2 && chars[start - 1] == '\n' && chars[start - 2] == '\n' {
+            break;
+        }
+        start -= 1;
+    }
+    let mut end = index;
+    while end + 1 < chars.len() {
+        if chars[end] == '\n' && chars[end + 1] == '\n' {
+            break;
+        }
+        end += 1;
+    }
+    (start, end)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn paragraphs_and_reverse_cross_page_selection() {
+        let chars: Vec<char> = "first line\nwrapped line\n\nsecond paragraph"
+            .chars()
+            .collect();
+        assert_eq!(paragraph_range(&chars, 4), (0, 23));
+        assert_eq!(paragraph_range(&chars, 30).0, 25);
+        let selection = TextSelection {
+            page: 3,
+            anchor: 4,
+            focus_page: 1,
+            focus: 2,
+        };
+        assert_eq!(selection.range_on_page(0, 10), None);
+        assert_eq!(selection.range_on_page(1, 10), Some((2, 10)));
+        assert_eq!(selection.range_on_page(2, 10), Some((0, 10)));
+        assert_eq!(selection.range_on_page(3, 10), Some((0, 5)));
     }
 }

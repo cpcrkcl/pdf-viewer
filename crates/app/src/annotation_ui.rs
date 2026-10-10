@@ -13,7 +13,8 @@ use uuid::Uuid;
 
 use crate::document_tab::{DocumentTab, Tool};
 use crate::reader_view::{PageView, ReaderResponse};
-use crate::theme::mocha;
+use crate::icons::{self, Icon};
+use crate::theme;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AnnotationTool {
@@ -67,22 +68,27 @@ impl AnnotationTool {
         }
     }
 
-    fn glyph(self) -> &'static str {
+    fn icon(self) -> Icon {
         match self {
-            Self::Select => "⬉",
-            Self::Highlight => "H",
-            Self::Underline => "U",
-            Self::Strikethrough => "S",
-            Self::Freehand => "✏",
-            Self::Eraser => "⌫",
-            Self::TextNote => "🗊",
-            Self::Rectangle => "▭",
-            Self::Oval => "○",
-            Self::Line => "╱",
-            Self::Arrow => "↗",
-            Self::Stamp => "★",
-            Self::Signature => "✍",
+            Self::Select => Icon::Pointer,
+            Self::Highlight => Icon::Highlight,
+            Self::Underline => Icon::Underline,
+            Self::Strikethrough => Icon::Strikethrough,
+            Self::Freehand => Icon::Pen,
+            Self::Eraser => Icon::Eraser,
+            Self::TextNote => Icon::Note,
+            Self::Rectangle => Icon::Rectangle,
+            Self::Oval => Icon::Oval,
+            Self::Line => Icon::Line,
+            Self::Arrow => Icon::Arrow,
+            Self::Stamp => Icon::Stamp,
+            Self::Signature => Icon::Signature,
         }
+    }
+
+    /// Starts a new group in the toolbar.
+    fn begins_group(self) -> bool {
+        matches!(self, Self::Highlight | Self::Freehand | Self::Rectangle | Self::Stamp)
     }
 
     pub fn requires_text_selection(self) -> bool {
@@ -178,12 +184,12 @@ impl DocumentTab {
             return;
         }
         self.annotations.index_generation = Some(generation);
-        self.annotations.index = self
-            .session
-            .editor
-            .parse()
-            .map(|document| annotations::annotation_index(&document))
-            .unwrap_or_default();
+        if let Ok(document) = self.session.editor.parse() {
+            self.appearance_digests = annotations::page_appearance_digests(&document);
+            self.annotations.index = annotations::annotation_index(&document);
+        } else {
+            self.appearance_digests.clear(); self.annotations.index.clear();
+        }
         // Keep the selection pointing at the same annotation if it survived.
         if let Some(selected) = &self.annotations.selected {
             let page = selected.page;
@@ -204,6 +210,7 @@ impl DocumentTab {
         if !self.session.security.allows_commenting() {
             return Err("This PDF's permissions don't allow adding or changing annotations.".into());
         }
+        self.refresh_annotation_index();
         self.session.editor.mutate(body).map_err(|error| error.to_string())?;
         self.after_annotation_change();
         Ok(())
@@ -211,8 +218,15 @@ impl DocumentTab {
 
     /// Annotation edits don't move text, so search results stay valid.
     pub fn after_annotation_change(&mut self) {
-        self.refresh_pages();
+        let previous_generation = self.metadata_generation();
+        let previous = self.appearance_digests.clone();
+        self.preserve_page_metadata();
         self.refresh_annotation_index();
+        if let Some(generation) = previous_generation {
+            let unchanged: std::collections::HashSet<_> = previous.iter().zip(&self.appearance_digests).enumerate()
+                .filter_map(|(index, (old, new))| (old == new).then_some(index)).collect();
+            self.record_render_carry(generation, unchanged);
+        }
     }
 }
 
@@ -319,7 +333,7 @@ pub fn handle(ctx: &egui::Context, tab: &mut DocumentTab, response: &ReaderRespo
                 if let Some(text) = tab.text_index(ctx)
                     && let Some(index) = text.get(start.page).and_then(|page| page.char_at(start.point))
                 {
-                    tab.selection = Some(crate::document_tab::TextSelection { page: start.page, anchor: index, focus: index });
+                    tab.selection = Some(crate::document_tab::TextSelection { page: start.page, anchor: index, focus: index, focus_page: start.page });
                 }
             }
             _ => {}
@@ -347,6 +361,7 @@ pub fn handle(ctx: &egui::Context, tab: &mut DocumentTab, response: &ReaderRespo
             && let Some(index) = text.get(current.page).and_then(|page| page.char_at(current.point))
         {
             selection.focus = index;
+            selection.focus_page = current.page;
         }
     }
 
@@ -426,15 +441,14 @@ fn resized_rect(rect: &PdfBox, pointer: (f32, f32), view: Option<&PageView>) -> 
 pub fn commit_markup(ctx: &egui::Context, tab: &mut DocumentTab, markup: MarkupKind) -> Result<(), String> {
     let Some(selection) = tab.selection.clone() else { return Ok(()) };
     let Some(text) = tab.text_index(ctx) else { return Ok(()) };
-    let Some(page_text) = text.get(selection.page) else { return Ok(()) };
-    let (start, end) = selection.range();
-    let boxes = page_text.line_boxes(start, end);
-    if boxes.is_empty() {
-        return Ok(());
-    }
+    let regions: Vec<_> = text.iter().enumerate().filter_map(|(index, page)| {
+        let (start, end) = selection.range_on_page(index, page.chars.len())?;
+        let boxes = page.line_boxes(start, end);
+        (!boxes.is_empty()).then_some((index, boxes))
+    }).collect();
+    if regions.is_empty() { return Ok(()); }
     let color = tab.annotations.color;
-    let page = selection.page;
-    tab.annotate(|document| annotations::add_text_markup(document, markup, &[(page, boxes)], color).map(|_| ()))?;
+    tab.annotate(|document| annotations::add_text_markup(document, markup, &regions, color).map(|_| ()))?;
     tab.selection = None;
     Ok(())
 }
@@ -469,7 +483,7 @@ pub fn paint_overlays(painter: &Painter, tab: &DocumentTab, response: &ReaderRes
             rect = resized_rect(original, *current, Some(view));
         }
         let screen = view.box_to_screen(&rect).expand(3.0);
-        let stroke_color = if selected.info.owned.is_some() { mocha::BLUE } else { mocha::OVERLAY0 };
+        let stroke_color = if selected.info.owned.is_some() { theme::colors().accent } else { theme::colors().faint };
         painter.add(Shape::dashed_line(
             &[screen.left_top(), screen.right_top(), screen.right_bottom(), screen.left_bottom(), screen.left_top()],
             Stroke::new(1.5, stroke_color),
@@ -478,7 +492,7 @@ pub fn paint_overlays(painter: &Painter, tab: &DocumentTab, response: &ReaderRes
         ));
         if selected.info.owned.is_some() {
             let handle = Rect::from_center_size(screen.right_bottom(), vec2(10.0, 10.0));
-            painter.rect_filled(handle, CornerRadius::same(2), mocha::BLUE);
+            painter.rect_filled(handle, CornerRadius::same(2), theme::colors().accent);
         }
     }
     match &tab.annotations.drag {
@@ -492,7 +506,7 @@ pub fn paint_overlays(painter: &Painter, tab: &DocumentTab, response: &ReaderRes
         Some(Drag::Erase { page, points }) => {
             if let Some(view) = response.page(*page) {
                 for point in points {
-                    painter.circle_stroke(view.to_screen(*point), 6.0, Stroke::new(1.0, mocha::RED));
+                    painter.circle_stroke(view.to_screen(*point), 6.0, Stroke::new(1.0, theme::colors().danger));
                 }
             }
         }
@@ -526,11 +540,13 @@ pub fn toolbar(ui: &mut Ui, tab: &mut DocumentTab, signatures: &[pdf_core::signa
     let mut request = AnnotationRequest::None;
     let current = is_annotating(tab);
     ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 2.0;
         for tool in AnnotationTool::ALL {
+            if tool.begins_group() {
+                icons::divider(ui);
+            }
             let selected = current == Some(tool);
-            let response = ui
-                .selectable_label(selected, RichText::new(tool.glyph()).size(15.0))
-                .on_hover_text(tool.title());
+            let response = icons::button(ui, tool.icon(), selected, tool.title());
             if response.clicked() {
                 tab.tool = Tool::Annotate(tool);
                 tab.annotations.drag = None;
@@ -547,15 +563,19 @@ pub fn toolbar(ui: &mut Ui, tab: &mut DocumentTab, signatures: &[pdf_core::signa
                 }
             }
         }
-        ui.separator();
+        icons::divider(ui);
+        ui.spacing_mut().item_spacing.x = 4.0;
         // Color: palette plus a custom picker.
         let mut chosen = None;
         for (name, color) in palette::ALL {
             let fill = to_color32(color);
-            let (rect, response) = ui.allocate_exact_size(vec2(16.0, 16.0), egui::Sense::click());
+            let (rect, response) = ui.allocate_exact_size(vec2(22.0, 22.0), egui::Sense::click());
             ui.painter().circle_filled(rect.center(), 7.0, fill);
+            ui.painter().circle_stroke(rect.center(), 7.0, Stroke::new(1.0, Color32::from_black_alpha(40)));
             if same_rgb(tab.annotations.color, color) {
-                ui.painter().circle_stroke(rect.center(), 8.5, Stroke::new(1.5, mocha::TEXT));
+                ui.painter().circle_stroke(rect.center(), 10.0, Stroke::new(1.5, theme::colors().accent));
+            } else if response.hovered() {
+                ui.painter().circle_stroke(rect.center(), 10.0, Stroke::new(1.0, theme::colors().faint));
             }
             if response.on_hover_text(name).clicked() {
                 chosen = Some(color);
@@ -575,7 +595,7 @@ pub fn toolbar(ui: &mut Ui, tab: &mut DocumentTab, signatures: &[pdf_core::signa
                 request = AnnotationRequest::Error(message);
             }
         }
-        ui.separator();
+        icons::divider(ui);
         egui::ComboBox::from_id_salt("line-width")
             .selected_text(tab.annotations.line_width.title())
             .width(96.0)
@@ -631,7 +651,7 @@ pub fn toolbar(ui: &mut Ui, tab: &mut DocumentTab, signatures: &[pdf_core::signa
             _ => {}
         }
         if let Some(selected) = tab.annotations.selected.clone() {
-            ui.separator();
+            icons::divider(ui);
             selection_controls(ui, tab, &selected, &mut request);
         }
     });
@@ -684,7 +704,7 @@ fn selection_controls(ui: &mut Ui, tab: &mut DocumentTab, selected: &Selected, r
     if selected.info.kind == AnnotationKind::TextNote && ui.small_button("Edit Note…").clicked() {
         *request = AnnotationRequest::EditNote { page, id, contents: selected.info.contents.clone().unwrap_or_default() };
     }
-    if ui.small_button(RichText::new("Delete").color(mocha::RED)).clicked() {
+    if ui.small_button(RichText::new("Delete").color(theme::colors().danger)).clicked() {
         result = delete_selected(tab);
     }
     if let Err(message) = result {
@@ -768,4 +788,29 @@ pub fn place_image(
         tab.tool = Tool::Annotate(AnnotationTool::Select);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod metadata_benchmark {
+    use super::*;
+    #[test]
+    #[ignore = "manual performance benchmark"]
+    fn annotation_refresh_benchmark() {
+        let bytes = pdf_core::testing::numbered_pdf(2000);
+        let pdf_core::loader::OpenResult::Opened(session) = pdf_core::loader::open_bytes(bytes, "benchmark.pdf".into()).unwrap() else { panic!("fixture") };
+        let mut tab = DocumentTab::new(1, session);
+        let start = std::time::Instant::now();
+        for _ in 0..20 {
+            std::hint::black_box(pdf_core::text::page_infos(&tab.pdf_data()).unwrap());
+            std::hint::black_box(pdf_core::annotations::annotation_index(&tab.session.editor.parse().unwrap()));
+        }
+        eprintln!("20 full metadata refreshes: {:?}", start.elapsed());
+        let start = std::time::Instant::now();
+        for _ in 0..20 {
+            tab.annotations.index_generation = None;
+            tab.after_annotation_change();
+            std::hint::black_box(&tab.appearance_digests);
+        }
+        eprintln!("20 annotation-only refreshes with fingerprints: {:?}", start.elapsed());
+    }
 }

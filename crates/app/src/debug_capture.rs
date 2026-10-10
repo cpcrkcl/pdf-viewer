@@ -22,6 +22,10 @@ pub struct DebugCapture {
     pub ocr: bool,
     /// `PDFVIEWER_CAPTURE_CONVERT=1`: open the conversion sheet.
     pub convert: bool,
+    /// `PDFVIEWER_CAPTURE_THEME=day|night|sepia`: the reader theme.
+    pub theme: Option<String>,
+    pub palette: bool,
+    pub split: bool,
 }
 
 impl DebugCapture {
@@ -37,12 +41,18 @@ impl DebugCapture {
             redact: std::env::var_os("PDFVIEWER_CAPTURE_REDACT").is_some(),
             ocr: std::env::var_os("PDFVIEWER_CAPTURE_OCR").is_some(),
             convert: std::env::var_os("PDFVIEWER_CAPTURE_CONVERT").is_some(),
+            theme: std::env::var("PDFVIEWER_CAPTURE_THEME").ok(),
+            palette: std::env::var_os("PDFVIEWER_CAPTURE_PALETTE").is_some(),
+            split: std::env::var_os("PDFVIEWER_CAPTURE_SPLIT").is_some(),
         })
     }
 
     pub fn tick(&mut self, ctx: &egui::Context) {
         self.frames += 1;
-        let delay = std::env::var("PDFVIEWER_CAPTURE_FRAMES").ok().and_then(|v| v.parse().ok()).unwrap_or(90);
+        let delay = std::env::var("PDFVIEWER_CAPTURE_FRAMES")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(90);
         if !self.requested && self.frames >= delay {
             self.requested = true;
             ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::default()));
@@ -55,7 +65,11 @@ impl DebugCapture {
         });
         if let Some(image) = image {
             let [width, height] = image.size;
-            let pixels: Vec<u8> = image.pixels.iter().flat_map(|pixel| pixel.to_array()).collect();
+            let pixels: Vec<u8> = image
+                .pixels
+                .iter()
+                .flat_map(|pixel| pixel.to_array())
+                .collect();
             if let Some(buffer) = image::RgbaImage::from_raw(width as u32, height as u32, pixels) {
                 let _ = buffer.save(&self.path);
             }

@@ -16,14 +16,14 @@ use crate::ids::{WorkingPageId, sha256_hex};
 use crate::outline::{OutlineNode, build_outline};
 use crate::structure;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum UnlockLevel {
     User,
     Owner,
 }
 
 /// The standard security handler `/P` bits (PDF 32000-1, table 22).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct AccessPermissions(pub u32);
 
 impl AccessPermissions {
@@ -42,7 +42,7 @@ impl AccessPermissions {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SecurityContext {
     pub is_encrypted: bool,
     pub unlock_level: UnlockLevel,
@@ -119,7 +119,10 @@ impl LockedDocument {
 
     /// `Ok(None)` means the password was wrong; the handle stays usable.
     pub fn unlock(&mut self, password: &str) -> CoreResult<Option<DocumentSession>> {
-        let source = self.source.as_ref().ok_or(CoreError::LockedHandleUnavailable)?;
+        let source = self
+            .source
+            .as_ref()
+            .ok_or(CoreError::LockedHandleUnavailable)?;
         let prepared = match prepare(source, Some(password)) {
             Ok(prepared) => prepared,
             Err(CoreError::PasswordRequired) => return Ok(None),
@@ -129,8 +132,13 @@ impl LockedDocument {
             }
         };
         self.source = None;
-        session_from(prepared, self.source_path.clone(), self.fingerprint.clone(), Some(password))
-            .map(Some)
+        session_from(
+            prepared,
+            self.source_path.clone(),
+            self.fingerprint.clone(),
+            Some(password),
+        )
+        .map(Some)
     }
 
     pub fn cancel(&mut self) {
@@ -162,7 +170,9 @@ pub fn open_bytes(bytes: Vec<u8>, source_path: PathBuf) -> CoreResult<OpenResult
     }
     let fingerprint = sha256_hex(&bytes);
     match prepare(&bytes, None) {
-        Ok(prepared) => session_from(prepared, source_path, fingerprint, None).map(OpenResult::Opened),
+        Ok(prepared) => {
+            session_from(prepared, source_path, fingerprint, None).map(OpenResult::Opened)
+        }
         Err(CoreError::PasswordRequired) => Ok(OpenResult::PasswordRequired(LockedDocument {
             source_path,
             source: Some(bytes),
@@ -260,11 +270,17 @@ fn decrypted(
         ]
         .into_iter()
         .all(|allowed| allowed.unwrap_or(false));
-        if everything { UnlockLevel::Owner } else { UnlockLevel::User }
+        if everything {
+            UnlockLevel::Owner
+        } else {
+            UnlockLevel::User
+        }
     };
 
     if document.is_encrypted() {
-        document.decrypt(password).map_err(|_| CoreError::PasswordRequired)?;
+        document
+            .decrypt(password)
+            .map_err(|_| CoreError::PasswordRequired)?;
     }
     let permissions = document
         .encryption_state
@@ -302,5 +318,7 @@ fn display_name(path: &Path) -> String {
 
 /// Page identities for a freshly opened document (used by tests and tools).
 pub fn original_page_ids(fingerprint: &str, count: usize) -> Vec<WorkingPageId> {
-    (0..count).map(|index| WorkingPageId::original(fingerprint, index)).collect()
+    (0..count)
+        .map(|index| WorkingPageId::original(fingerprint, index))
+        .collect()
 }

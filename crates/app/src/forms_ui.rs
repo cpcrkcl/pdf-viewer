@@ -4,7 +4,7 @@ use egui::{RichText, Ui};
 use pdf_core::forms::{self, FieldKind, FieldValue, FormField};
 
 use crate::document_tab::DocumentTab;
-use crate::theme::mocha;
+use crate::theme;
 
 pub enum FormRequest {
     None,
@@ -102,7 +102,7 @@ pub fn panel(ui: &mut Ui, tab: &mut DocumentTab) -> FormRequest {
             ui.horizontal(|ui| {
                 let mut title = RichText::new(field.display_name()).strong();
                 if focus.as_deref() == Some(field.name.as_str()) {
-                    title = title.color(mocha::BLUE);
+                    title = title.color(theme::colors().accent);
                 }
                 let label = ui.add(egui::Button::new(title).frame(false)).on_hover_text(format!("Page {}", field.page + 1));
                 if label.clicked() {
@@ -111,7 +111,7 @@ pub fn panel(ui: &mut Ui, tab: &mut DocumentTab) -> FormRequest {
                     tab.scroll_to_page = None;
                 }
                 if field.is_required {
-                    ui.colored_label(mocha::RED, "*");
+                    ui.colored_label(theme::colors().danger, "*");
                 }
                 if field.is_read_only {
                     ui.weak("read-only");

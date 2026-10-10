@@ -52,7 +52,13 @@ pub enum SidebarTab {
 }
 
 impl SidebarTab {
-    pub const ALL: [Self; 5] = [Self::Thumbnails, Self::Contents, Self::Bookmarks, Self::Annotations, Self::Search];
+    pub const ALL: [Self; 5] = [
+        Self::Thumbnails,
+        Self::Contents,
+        Self::Bookmarks,
+        Self::Annotations,
+        Self::Search,
+    ];
 
     pub fn title(self) -> &'static str {
         match self {
@@ -94,7 +100,7 @@ impl PageLabelStyle {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum Zoom {
     /// Fit the widest page to the viewport width; refits on resize.
     FitWidth,
@@ -105,7 +111,7 @@ pub const MIN_ZOOM: f32 = 0.1;
 pub const MAX_ZOOM: f32 = 8.0;
 const ZOOM_STEP: f32 = 1.25;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReaderState {
     page_count: usize,
     selected_page_index: usize,
@@ -127,7 +133,11 @@ impl ReaderState {
         Self {
             page_count,
             selected_page_index: 0,
-            selected_page_indexes: if page_count > 0 { BTreeSet::from([0]) } else { BTreeSet::new() },
+            selected_page_indexes: if page_count > 0 {
+                BTreeSet::from([0])
+            } else {
+                BTreeSet::new()
+            },
             display_mode: DisplayMode::Continuous,
             theme: ReaderTheme::Night,
             is_sidebar_visible: true,
@@ -210,7 +220,11 @@ impl ReaderState {
             .copied()
             .filter(|candidate| *candidate < page_count)
             .collect();
-        let indexes = if valid.is_empty() { BTreeSet::from([index]) } else { valid };
+        let indexes = if valid.is_empty() {
+            BTreeSet::from([index])
+        } else {
+            valid
+        };
         if !indexes.contains(&index) {
             index = *indexes.first().unwrap();
         }
@@ -262,8 +276,19 @@ fn roman(value: i64) -> String {
         return value.to_string();
     }
     const SYMBOLS: [(i64, &str); 13] = [
-        (1000, "M"), (900, "CM"), (500, "D"), (400, "CD"), (100, "C"), (90, "XC"),
-        (50, "L"), (40, "XL"), (10, "X"), (9, "IX"), (5, "V"), (4, "IV"), (1, "I"),
+        (1000, "M"),
+        (900, "CM"),
+        (500, "D"),
+        (400, "CD"),
+        (100, "C"),
+        (90, "XC"),
+        (50, "L"),
+        (40, "XL"),
+        (10, "X"),
+        (9, "IX"),
+        (5, "V"),
+        (4, "IV"),
+        (1, "I"),
     ];
     let mut remaining = value;
     let mut result = String::new();

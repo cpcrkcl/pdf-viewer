@@ -6,7 +6,7 @@ use pdf_core::redaction::{MAXIMUM_REGIONS, RedactionRegion};
 
 use crate::document_tab::{DocumentTab, Tool};
 use crate::reader_view::ReaderResponse;
-use crate::theme::mocha;
+use crate::theme;
 
 #[derive(Default)]
 pub struct RedactionState {
@@ -57,7 +57,7 @@ pub fn handle(ctx: &egui::Context, tab: &mut DocumentTab, response: &ReaderRespo
 pub fn paint(painter: &Painter, tab: &DocumentTab, response: &ReaderResponse) {
     let draw = |rect: Rect| {
         painter.rect_filled(rect, CornerRadius::ZERO, Color32::from_black_alpha(150));
-        painter.rect_stroke(rect, CornerRadius::ZERO, Stroke::new(1.5, mocha::RED), StrokeKind::Outside);
+        painter.rect_stroke(rect, CornerRadius::ZERO, Stroke::new(1.5, theme::colors().danger), StrokeKind::Outside);
     };
     for region in &tab.redaction.regions {
         if let Some(view) = response.page(region.page) {
@@ -74,7 +74,7 @@ pub fn paint(painter: &Painter, tab: &DocumentTab, response: &ReaderResponse) {
 pub fn toolbar(ui: &mut Ui, tab: &mut DocumentTab) -> RedactionRequest {
     let mut request = RedactionRequest::None;
     ui.horizontal_wrapped(|ui| {
-        ui.label(RichText::new("Redact").strong().color(mocha::RED));
+        ui.label(RichText::new("Redact").strong().color(theme::colors().danger));
         ui.weak("Drag over content to mark it.");
         ui.separator();
         let count = tab.redaction.regions.len();
@@ -107,7 +107,7 @@ pub fn toolbar(ui: &mut Ui, tab: &mut DocumentTab) -> RedactionRequest {
         ui.label("Reason label");
         ui.add(egui::TextEdit::singleline(&mut tab.redaction.reason_label).hint_text("Optional, e.g. Privileged").char_limit(80).desired_width(150.0));
         ui.separator();
-        if ui.add_enabled(count > 0, egui::Button::new(RichText::new("Apply Redactions…").color(mocha::RED))).clicked() {
+        if ui.add_enabled(count > 0, theme::destructive("Apply Redactions…")).clicked() {
             request = if tab.session.security.allows_document_changes() {
                 RedactionRequest::ConfirmApply
             } else {

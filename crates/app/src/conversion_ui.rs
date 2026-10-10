@@ -7,7 +7,7 @@ use std::path::Path;
 use egui::{RichText, Ui};
 use pdf_core::conversion::ImageFormat;
 
-use crate::theme::mocha;
+use crate::theme;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Mode {
@@ -127,14 +127,14 @@ impl ConversionSheet {
                     });
                     if !may_copy {
                         ui.add_space(6.0);
-                        ui.label(RichText::new("⚠ This PDF's permissions don't allow copying its content.").color(mocha::YELLOW));
+                        ui.label(RichText::new("⚠ This PDF's permissions don't allow copying its content.").color(theme::colors().warning));
                     }
                 }
                 Mode::CreatePdf => {
                     ui.strong("Create a New PDF From Images");
                     ui.label("Choose up to 500 PNG, JPEG, HEIC, or TIFF images. Their selection order becomes the PDF page order, and the image files remain unchanged.");
                     ui.add_space(6.0);
-                    if ui.button(RichText::new("Choose Images…").strong()).clicked() {
+                    if ui.add(theme::primary("Choose Images…")).clicked() {
                         outcome = ConversionOutcome::CreatePdf;
                     }
                 }
@@ -149,15 +149,15 @@ impl ConversionSheet {
                         if ui.button(title).clicked() {
                             outcome = ConversionOutcome::ChooseSoffice;
                         }
-                        if soffice.is_some() && ui.button(RichText::new("Forget").color(mocha::RED)).clicked() {
+                        if soffice.is_some() && ui.button(RichText::new("Forget").color(theme::colors().danger)).clicked() {
                             outcome = ConversionOutcome::ForgetSoffice;
                         }
                     });
                     if let Some(path) = soffice {
-                        ui.label(RichText::new(format!("✔ {}", path.display())).color(mocha::SUBTEXT0));
+                        ui.label(RichText::new(format!("✔ {}", path.display())).color(theme::colors().muted));
                     }
                     ui.add_space(6.0);
-                    if ui.add_enabled(soffice.is_some(), egui::Button::new(RichText::new("Convert Office Document…").strong())).clicked() {
+                    if ui.add_enabled(soffice.is_some(), theme::primary("Convert Office Document…")).clicked() {
                         outcome = ConversionOutcome::ConvertOffice;
                     }
                 }
@@ -173,12 +173,12 @@ impl ConversionSheet {
                 let ready = may_copy && !pages.is_empty();
                 match self.mode {
                     Mode::Images => {
-                        if ui.add_enabled(ready, egui::Button::new(RichText::new("Export Images…").strong())).clicked() {
+                        if ui.add_enabled(ready, theme::primary("Export Images…")).clicked() {
                             outcome = ConversionOutcome::ExportImages { pages, format: self.format, dpi: self.dpi };
                         }
                     }
                     Mode::Text => {
-                        if ui.add_enabled(ready, egui::Button::new(RichText::new("Export Text…").strong())).clicked() {
+                        if ui.add_enabled(ready, theme::primary("Export Text…")).clicked() {
                             outcome = ConversionOutcome::ExportText { pages };
                         }
                     }

@@ -1054,3 +1054,39 @@ pub fn regenerate_appearance(document: &mut LoDocument, object: ObjectId) -> Cor
     dictionary.set("AP", dictionary! { "N" => form });
     Ok(())
 }
+
+/// Appearance fingerprints for cache reuse after known annotation/form edits.
+/// Walk annotation dependencies, including inherited field values and appearance
+/// streams, without following their /P back into the entire document.
+pub fn page_appearance_digests(document: &LoDocument) -> Vec<String> {
+    use sha2::{Digest, Sha256};
+    fn hash_object(document: &LoDocument, object: &Object, hash: &mut Sha256, seen: &mut std::collections::HashSet<ObjectId>) {
+        match object {
+            Object::Reference(id) => {
+                hash.update(format!("ref:{id:?}"));
+                if seen.insert(*id) && let Ok(object) = document.get_object(*id) { hash_object(document, object, hash, seen); }
+            }
+            Object::Dictionary(dict) => {
+                hash.update(b"dict");
+                for (key, value) in dict {
+                    if key == b"P" { continue; }
+                    hash.update(key); hash_object(document, value, hash, seen);
+                }
+            }
+            Object::Array(values) => { hash.update(b"array"); for value in values { hash_object(document, value, hash, seen); } }
+            Object::Stream(stream) => {
+                hash.update(b"stream");
+                hash_object(document, &Object::Dictionary(stream.dict.clone()), hash, seen);
+                hash.update(&stream.content);
+            }
+            value => hash.update(format!("{value:?}")),
+        }
+    }
+    structure::page_ids(document).iter().map(|page| {
+        let mut hash = Sha256::new();
+        if let Ok(dict) = structure::page_dictionary(document, *page)
+            && let Ok(annotations) = dict.get(b"Annots")
+        { hash_object(document, annotations, &mut hash, &mut Default::default()); }
+        hash.finalize().iter().map(|byte| format!("{byte:02x}")).collect()
+    }).collect()
+}
