@@ -33,7 +33,14 @@ jobs:
           -destination 'platform=macOS'
           test
           -only-testing:PDFViewerTests
+          -resultBundlePath "${RUNNER_TEMP}/PDFViewerTests.xcresult"
           CODE_SIGNING_ALLOWED=NO
+      - name: Unit test failure details
+        if: ${{ failure() }}
+        run: |
+          if [ -d "${RUNNER_TEMP}/PDFViewerTests.xcresult" ]; then
+            xcrun xcresulttool get test-results summary --path "${RUNNER_TEMP}/PDFViewerTests.xcresult"
+          fi
       - name: Static analysis
         run: >-
           xcodebuild
