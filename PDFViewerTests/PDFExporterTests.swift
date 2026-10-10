@@ -6,6 +6,20 @@ import XCTest
 
 @MainActor
 final class PDFExporterTests: XCTestCase {
+    func testValidationTextAcceptsEquivalentPDFKitPageSeparators() {
+        XCTAssertEqual(PDFExporter.validationText(nil), PDFExporter.validationText("\n"))
+        XCTAssertEqual(
+            PDFExporter.validationText("\nAlpha\r\nBravo\r\n"),
+            PDFExporter.validationText("Alpha\nBravo")
+        )
+    }
+
+    func testValidationTextStillDetectsChangedContentsAndInternalWhitespace() {
+        XCTAssertNotEqual(PDFExporter.validationText("Alpha"), PDFExporter.validationText("Alph"))
+        XCTAssertNotEqual(PDFExporter.validationText("A B"), PDFExporter.validationText("AB"))
+        XCTAssertNotEqual(PDFExporter.validationText("A\nB"), PDFExporter.validationText("A B"))
+    }
+
     func testExportCreatesAValidatedDistinctPDFAndLeavesSourceBytesUnchanged() throws {
         let temporaryDirectory = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: temporaryDirectory) }

@@ -380,7 +380,7 @@ struct PDFExporter: PDFExporting {
                 return ValidationPage(
                     rotation: page.rotation,
                     cropBounds: page.bounds(for: .cropBox),
-                    text: page.string,
+                    text: Self.validationText(page.string),
                     annotations: page.annotations
                         .filter { $0.type != PDFAnnotationSubtype.popup.pdfTypeName }
                         .map { annotation in
@@ -415,6 +415,15 @@ struct PDFExporter: PDFExporting {
         )
     }
 
+    /// PDFKit can change empty text and page-boundary separators after a write.
+    /// Keep internal whitespace and every non-whitespace character significant.
+    static func validationText(_ text: String?) -> String {
+        (text ?? "")
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     private func resourcesReferToSameFile(_ firstURL: URL, _ secondURL: URL) -> Bool {
         guard
             fileManager.fileExists(atPath: secondURL.path),
@@ -439,7 +448,7 @@ private struct ValidationSnapshot: Equatable {
 private struct ValidationPage: Equatable {
     let rotation: Int
     let cropBounds: CGRect
-    let text: String?
+    let text: String
     let annotations: [ValidationAnnotation]
 }
 
