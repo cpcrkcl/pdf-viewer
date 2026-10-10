@@ -1208,7 +1208,8 @@ final class TrackingPDFThumbnailView: PDFThumbnailView {
     }
 }
 
-private final class PDFInteractionPolicyDelegate: NSObject, @MainActor PDFViewDelegate {
+@MainActor
+private final class PDFInteractionPolicyDelegate: NSObject, @preconcurrency PDFViewDelegate {
     weak var owner: InteractivePDFView?
 
     init(owner: InteractivePDFView) {
