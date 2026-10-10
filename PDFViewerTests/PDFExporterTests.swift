@@ -26,7 +26,7 @@ final class PDFExporterTests: XCTestCase {
         try editor.rotatePages(at: IndexSet(integer: 1), clockwise: true)
         try editor.movePages(at: IndexSet(integer: 2), to: 0)
 
-        let result = try PDFExporter(stagingDirectory: stagingDirectory).export(
+        let result = try PDFExporter(stagingDirectory: stagingDirectory, validationFailure: { XCTFail($0) }).export(
             document: editor.document,
             sourceURL: sourceURL,
             to: destinationURL
@@ -164,7 +164,7 @@ final class PDFExporterTests: XCTestCase {
             color: .yellow
         )
 
-        _ = try PDFExporter().export(
+        _ = try PDFExporter(validationFailure: { XCTFail($0) }).export(
             document: editor.document,
             sourceURL: sourceURL,
             to: destinationURL,
@@ -199,7 +199,7 @@ final class PDFExporterTests: XCTestCase {
         let editor = try PDFDocumentEditor(document: unlockedSource)
         let extracted = try editor.extractPages(at: IndexSet(integer: 0))
 
-        _ = try PDFExporter().export(
+        _ = try PDFExporter(validationFailure: { XCTFail($0) }).export(
             document: extracted,
             sourceURL: sourceURL,
             to: destinationURL,
