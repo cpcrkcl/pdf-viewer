@@ -1383,11 +1383,11 @@ private struct WidthAdaptiveRow<Regular: View, Compact: View>: View {
         .background(alignment: .leading) {
             measurementProbe
         }
-        .onGeometryChange(for: Bool.self) { proxy in
-            latestRowWidth.value = proxy.size.width
-            return regularFits(in: proxy.size.width)
-        } action: { fits in
-            showsRegular = fits
+        .onGeometryChange(for: CGFloat.self) { proxy in
+            proxy.size.width
+        } action: { width in
+            latestRowWidth.value = width
+            showsRegular = regularFits(in: width)
         }
         .onChange(of: regularNaturalWidth) {
             // The probe can deliver its first measurement after the row's
