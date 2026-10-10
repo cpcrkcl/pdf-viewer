@@ -23,6 +23,8 @@ struct PDFOCRSheet: View {
     @State private var addsSearchableText = true
     @State private var enhancement: PDFScanEnhancementPreset = .cleanScan
     @State private var rasterQuality: PDFOCRRasterQuality = .balanced
+    @State private var language: PDFOCRLanguage = .automatic
+    @State private var minimumConfidence: Double = 0.5
     @State private var cropMarginsPercent: Double = 0
     @State private var splitDoublePages = false
     @State private var preview: PDFScanPreview?
@@ -40,6 +42,7 @@ struct PDFOCRSheet: View {
         }
         .padding(22)
         .frame(minWidth: 500, idealWidth: 560)
+        .background(CatppuccinMocha.base)
         .interactiveDismissDisabled(appState.isLocalProcessing)
         .task(id: previewRequest) {
             await loadPreview()
@@ -47,14 +50,12 @@ struct PDFOCRSheet: View {
     }
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Label("OCR & Scan Enhancement", systemImage: "doc.text.viewfinder")
-                .font(.title2.weight(.semibold))
-            Label("Runs entirely on this Mac. Pages and recognized text are never uploaded.", systemImage: "lock.shield")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
+        SheetHeader(
+            title: "OCR & Scan Enhancement",
+            subtitle: "Runs entirely on this Mac. Pages and recognized text are never uploaded.",
+            systemImage: "doc.text.viewfinder",
+            tint: .teal
+        )
     }
 
     private var settings: some View {
@@ -71,6 +72,31 @@ struct PDFOCRSheet: View {
                 .foregroundStyle(.secondary)
 
             Toggle("Add searchable text with local OCR", isOn: $addsSearchableText)
+
+            Picker("OCR Language", selection: $language) {
+                ForEach(PDFOCRLanguage.allCases) { language in
+                    Text(language.title).tag(language)
+                }
+            }
+            .accessibilityLabel("OCR Language")
+            .disabled(!addsSearchableText)
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Text("Minimum Confidence")
+                    Spacer()
+                    Text("\(Int(minimumConfidence * 100))%")
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                }
+                Slider(value: $minimumConfidence, in: 0...1, step: 0.05)
+                    .accessibilityLabel("Minimum Confidence")
+            }
+            .disabled(!addsSearchableText)
+
+            Text("Lower confidence keeps more uncertain text; higher confidence reduces false positives.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
 
             Picker("Scan Appearance", selection: $enhancement) {
                 ForEach(PDFScanEnhancementPreset.allCases) { preset in
@@ -161,7 +187,7 @@ struct PDFOCRSheet: View {
                 .resizable()
                 .scaledToFit()
                 .frame(maxWidth: .infinity, minHeight: 100, maxHeight: 165)
-                .background(.quaternary.opacity(0.5))
+                .background(CatppuccinMocha.surface0)
                 .clipShape(RoundedRectangle(cornerRadius: 6))
                 .accessibilityLabel("\(title) scan preview")
         }
@@ -204,6 +230,8 @@ struct PDFOCRSheet: View {
                     addsSearchableText: addsSearchableText,
                     enhancement: enhancement,
                     rasterQuality: rasterQuality,
+                    language: language,
+                    minimumConfidence: Float(minimumConfidence),
                     cropMarginsPercent: cropMarginsPercent,
                     splitDoublePages: splitDoublePages
                 )

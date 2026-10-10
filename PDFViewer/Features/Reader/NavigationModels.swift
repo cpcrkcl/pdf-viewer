@@ -137,7 +137,10 @@ enum DocumentOutlineBuilder {
         loadedNodeCount += 1
 
         let rawLabel = outline.label?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let label = String((rawLabel?.isEmpty == false ? rawLabel! : "Untitled Section").prefix(maximumLabelLength))
+        let label = String(
+            (rawLabel.flatMap { $0.isEmpty ? nil : $0 } ?? "Untitled Section")
+                .prefix(maximumLabelLength)
+        )
         let pageID = destinationPageID(
             for: outline,
             document: document,
@@ -260,6 +263,29 @@ final class PageBookmarkStore: ObservableObject {
         persist()
     }
 
+    func exportJSON() throws -> Data {
+        try JSONEncoder.pdfViewerPretty.encode(BookmarkTransfer(version: 1, bookmarks: bookmarks))
+    }
+
+    func importJSON(_ data: Data) throws {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let transfer = try decoder.decode(BookmarkTransfer.self, from: data)
+        guard transfer.version == 1, transfer.bookmarks.count <= 20_000 else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        var merged = Dictionary(uniqueKeysWithValues: bookmarks.map { ($0.id, $0) })
+        for bookmark in transfer.bookmarks {
+            guard
+                bookmark.label.count <= 120,
+                bookmark.documentFingerprint.count == 64
+            else { continue }
+            merged[bookmark.id] = bookmark
+        }
+        bookmarks = merged.values.sorted { $0.createdAt < $1.createdAt }
+        persist()
+    }
+
     private func sanitizedLabel(_ label: String) -> String {
         let trimmed = label.trimmingCharacters(in: .whitespacesAndNewlines)
         return String((trimmed.isEmpty ? "Bookmark" : trimmed).prefix(120))
@@ -270,6 +296,20 @@ final class PageBookmarkStore: ObservableObject {
             return
         }
         defaults.set(data, forKey: key)
+    }
+}
+
+private struct BookmarkTransfer: Codable {
+    let version: Int
+    let bookmarks: [PageBookmark]
+}
+
+private extension JSONEncoder {
+    static var pdfViewerPretty: JSONEncoder {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        return encoder
     }
 }
 

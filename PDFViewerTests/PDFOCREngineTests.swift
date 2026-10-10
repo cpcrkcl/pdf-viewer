@@ -6,6 +6,17 @@ import XCTest
 
 @MainActor
 final class PDFOCREngineTests: XCTestCase {
+    func testRasterDimensionsRejectNonFiniteGeometryWithoutTrapping() throws {
+        XCTAssertThrowsError(
+            try PDFOCREngine.rasterDimensions(
+                pageSize: CGSize(width: CGFloat.infinity, height: 792),
+                rasterDPI: 300
+            )
+        ) { error in
+            XCTAssertEqual(error as? PDFOCRError, .couldNotRenderPage)
+        }
+    }
+
     func testLocalOCRCreatesSearchableTextLayerAndPreservesUnselectedPages() async throws {
         let source = try makeDocument(pages: ["OFFLINE OCR SAMPLE 4829", "Untouched vector page"])
         let originalFirstPageText = source.page(at: 0)?.string
@@ -215,6 +226,20 @@ final class PDFOCREngineTests: XCTestCase {
             XCTFail("Expected an invalid-crop error")
         } catch {
             XCTAssertEqual(error as? PDFOCRError, .invalidCropMargins)
+        }
+
+        do {
+            _ = try await PDFOCREngine.process(
+                document: source,
+                pageIndexes: [0],
+                addsSearchableText: true,
+                enhancement: .none,
+                language: .englishUS,
+                minimumConfidence: 1.1
+            ) { _ in }
+            XCTFail("Expected an invalid-confidence error")
+        } catch {
+            XCTAssertEqual(error as? PDFOCRError, .recognitionFailed)
         }
     }
 

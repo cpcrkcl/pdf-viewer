@@ -15,6 +15,7 @@ enum AnnotationTool: String, CaseIterable, Identifiable {
     case underline
     case strikethrough
     case freehand
+    case eraser
     case textNote
     case rectangle
     case oval
@@ -37,6 +38,8 @@ enum AnnotationTool: String, CaseIterable, Identifiable {
             "Strikethrough"
         case .freehand:
             "Freehand"
+        case .eraser:
+            "Ink Eraser"
         case .textNote:
             "Text Note"
         case .rectangle:
@@ -66,6 +69,8 @@ enum AnnotationTool: String, CaseIterable, Identifiable {
             "strikethrough"
         case .freehand:
             "pencil.tip"
+        case .eraser:
+            "eraser"
         case .textNote:
             "note.text.badge.plus"
         case .rectangle:
@@ -87,7 +92,7 @@ enum AnnotationTool: String, CaseIterable, Identifiable {
         switch self {
         case .highlight, .underline, .strikethrough:
             true
-        case .select, .freehand, .textNote, .rectangle, .oval, .line, .arrow, .stamp, .signature:
+        case .select, .freehand, .eraser, .textNote, .rectangle, .oval, .line, .arrow, .stamp, .signature:
             false
         }
     }
@@ -106,6 +111,17 @@ enum AnnotationTool: String, CaseIterable, Identifiable {
             nil
         }
     }
+}
+
+struct OwnedAnnotationItem: Identifiable, Equatable {
+    let identifier: AnnotationIdentifier
+    let pageIndex: Int
+    let kind: AnnotationTool
+    let label: String
+
+    var id: String { "\(pageIndex):\(identifier.rawValue.uuidString)" }
+    var pageNumber: Int { pageIndex + 1 }
+    var isInk: Bool { kind == .freehand }
 }
 
 enum ShapeAnnotationKind: String, CaseIterable, Identifiable {
@@ -184,24 +200,33 @@ enum AnnotationPaletteColor: String, CaseIterable, Identifiable {
 }
 
 enum AnnotationLineWidth: String, CaseIterable, Identifiable {
+    case hairline
     case fine
     case standard
     case bold
+    case extraBold
+    case marker
 
     var id: Self { self }
 
     var title: String {
-        rawValue.capitalized
+        self == .extraBold ? "Extra Bold" : rawValue.capitalized
     }
 
     var points: CGFloat {
         switch self {
+        case .hairline:
+            0.75
         case .fine:
             1.5
         case .standard:
             3
         case .bold:
             5
+        case .extraBold:
+            8
+        case .marker:
+            12
         }
     }
 }
@@ -315,8 +340,10 @@ final class AnnotationState: ObservableObject {
     @Published var isActive = false
     @Published var selectedTool: AnnotationTool = .select
     @Published var selectedColor: AnnotationPaletteColor = .black
+    @Published var customColor: NSColor?
     @Published var selectedLineWidth: AnnotationLineWidth = .standard
     @Published var selectedStamp: StampPreset = .approved
+    @Published var selectedCustomStampID: UUID?
     @Published var selectedSignatureSize: SignatureSizePreset = .medium
     @Published var selectedSignatureID: UUID?
     @Published private(set) var textMarkupRegions: [TextMarkupRegion] = []
@@ -326,6 +353,9 @@ final class AnnotationState: ObservableObject {
     var hasTextSelection: Bool {
         !textMarkupRegions.isEmpty
     }
+
+    var effectiveColor: NSColor { customColor ?? selectedColor.color }
+    var colorTitle: String { customColor == nil ? selectedColor.title : "Custom" }
 
     func begin() {
         isActive = true
@@ -342,8 +372,10 @@ final class AnnotationState: ObservableObject {
         isActive = false
         selectedTool = .select
         selectedColor = .black
+        customColor = nil
         selectedLineWidth = .standard
         selectedStamp = .approved
+        selectedCustomStampID = nil
         selectedSignatureSize = .medium
         selectedSignatureID = nil
         clearTransientSelection()

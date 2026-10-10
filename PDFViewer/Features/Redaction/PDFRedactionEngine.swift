@@ -54,7 +54,9 @@ final class RedactionState: ObservableObject {
     }
 
     func updateReasonLabel(_ label: String) {
-        reasonLabel = String(label.prefix(80))
+        reasonLabel = String(
+            label.trimmingCharacters(in: .whitespacesAndNewlines).prefix(80)
+        )
     }
 }
 
@@ -169,6 +171,9 @@ enum PDFRedactionEngine {
             }
         }
 
+        // PDFKit adds producer/creation metadata when serializing even after
+        // documentAttributes is cleared. Verify that user-supplied metadata is
+        // gone without rejecting those framework-generated bookkeeping keys.
         let sensitiveMetadataKeys: [PDFDocumentAttribute] = [
             .titleAttribute,
             .authorAttribute,
@@ -237,7 +242,12 @@ enum PDFRedactionEngine {
         }
 
         let cropBounds = pageReference.getBoxRect(.cropBox)
-        guard cropBounds.width > 0, cropBounds.height > 0 else {
+        guard
+            cropBounds.width.isFinite,
+            cropBounds.height.isFinite,
+            cropBounds.width > 0,
+            cropBounds.height > 0
+        else {
             throw PDFRedactionError.couldNotRasterize
         }
         let normalizedRotation = ((page.rotation % 360) + 360) % 360
@@ -314,7 +324,9 @@ enum PDFRedactionEngine {
         guard let label else {
             return nil
         }
-        let normalized = String(label.prefix(80)).trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalized = String(
+            label.trimmingCharacters(in: .whitespacesAndNewlines).prefix(80)
+        )
         return normalized.isEmpty ? nil : normalized
     }
 

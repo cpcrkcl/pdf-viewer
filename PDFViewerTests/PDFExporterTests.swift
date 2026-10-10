@@ -6,6 +6,20 @@ import XCTest
 
 @MainActor
 final class PDFExporterTests: XCTestCase {
+    func testValidationTextAcceptsEquivalentPDFKitPageSeparators() {
+        XCTAssertEqual(PDFExporter.validationText(nil), PDFExporter.validationText("\n"))
+        XCTAssertEqual(
+            PDFExporter.validationText("\nAlpha\r\nBravo\r\n"),
+            PDFExporter.validationText("Alpha\nBravo")
+        )
+    }
+
+    func testValidationTextStillDetectsChangedContentsAndInternalWhitespace() {
+        XCTAssertNotEqual(PDFExporter.validationText("Alpha"), PDFExporter.validationText("Alph"))
+        XCTAssertNotEqual(PDFExporter.validationText("A B"), PDFExporter.validationText("AB"))
+        XCTAssertNotEqual(PDFExporter.validationText("A\nB"), PDFExporter.validationText("A B"))
+    }
+
     func testExportCreatesAValidatedDistinctPDFAndLeavesSourceBytesUnchanged() throws {
         let temporaryDirectory = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
@@ -26,7 +40,7 @@ final class PDFExporterTests: XCTestCase {
         try editor.rotatePages(at: IndexSet(integer: 1), clockwise: true)
         try editor.movePages(at: IndexSet(integer: 2), to: 0)
 
-        let result = try PDFExporter(stagingDirectory: stagingDirectory).export(
+        let result = try PDFExporter(stagingDirectory: stagingDirectory, validationFailure: { XCTFail($0) }).export(
             document: editor.document,
             sourceURL: sourceURL,
             to: destinationURL
@@ -64,6 +78,29 @@ final class PDFExporterTests: XCTestCase {
             XCTAssertEqual(error as? PDFExportError, .sourceAndDestinationMatch)
         }
         XCTAssertEqual(try Data(contentsOf: sourceURL), originalSourceData)
+    }
+
+    func testExportRejectsAHardLinkToTheOriginalPDF() throws {
+        let temporaryDirectory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
+
+        let sourceURL = temporaryDirectory.appendingPathComponent("source.pdf")
+        let hardLinkURL = temporaryDirectory.appendingPathComponent("hard-link.pdf")
+        try FixturePDFBuilder.writeTextPDF(pages: ["Alpha"], to: sourceURL)
+        try FileManager.default.linkItem(at: sourceURL, to: hardLinkURL)
+        let sourceData = try Data(contentsOf: sourceURL)
+        let document = try openDocument(at: sourceURL)
+
+        XCTAssertThrowsError(
+            try PDFExporter().export(
+                document: document,
+                sourceURL: sourceURL,
+                to: hardLinkURL
+            )
+        ) { error in
+            XCTAssertEqual(error as? PDFExportError, .sourceAndDestinationMatch)
+        }
+        XCTAssertEqual(try Data(contentsOf: sourceURL), sourceData)
     }
 
     func testExportCanReplaceAnExplicitlyChosenNonSourceOutput() throws {
@@ -141,7 +178,7 @@ final class PDFExporterTests: XCTestCase {
             color: .yellow
         )
 
-        _ = try PDFExporter().export(
+        _ = try PDFExporter(validationFailure: { XCTFail($0) }).export(
             document: editor.document,
             sourceURL: sourceURL,
             to: destinationURL,
@@ -176,7 +213,7 @@ final class PDFExporterTests: XCTestCase {
         let editor = try PDFDocumentEditor(document: unlockedSource)
         let extracted = try editor.extractPages(at: IndexSet(integer: 0))
 
-        _ = try PDFExporter().export(
+        _ = try PDFExporter(validationFailure: { XCTFail($0) }).export(
             document: extracted,
             sourceURL: sourceURL,
             to: destinationURL,

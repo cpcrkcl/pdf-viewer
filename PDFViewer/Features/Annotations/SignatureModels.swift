@@ -1,7 +1,9 @@
 import AppKit
 import Combine
 import Foundation
+import ImageIO
 @preconcurrency import PDFKit
+import UniformTypeIdentifiers
 
 enum SignatureSizePreset: String, CaseIterable, Identifiable, Codable {
     case small
@@ -41,6 +43,7 @@ enum SignatureLibraryError: LocalizedError, Equatable {
     case couldNotCreateStorage
     case couldNotWriteImage
     case couldNotWriteIndex
+    case imageTooLarge
 
     var errorDescription: String? {
         switch self {
@@ -56,6 +59,8 @@ enum SignatureLibraryError: LocalizedError, Equatable {
             "PDFViewer could not save that signature image locally."
         case .couldNotWriteIndex:
             "PDFViewer could not update its local signature library."
+        case .imageTooLarge:
+            "Choose a signature image smaller than 25 megapixels and 25 MB."
         }
     }
 }
@@ -65,6 +70,9 @@ enum SignatureLibraryError: LocalizedError, Equatable {
 /// PDF; no passwords, document data, or signature pixels are logged.
 @MainActor
 final class SignatureLibrary: ObservableObject {
+    nonisolated static let maximumImageBytes = 25 * 1_024 * 1_024
+    nonisolated static let maximumImagePixels = 25_000_000
+
     @Published private(set) var signatures: [StoredSignature] = []
 
     private let fileManager: FileManager
@@ -73,13 +81,14 @@ final class SignatureLibrary: ObservableObject {
 
     init(
         storageDirectory: URL? = nil,
+        libraryFolder: String = "Signatures",
         fileManager: FileManager = .default
     ) {
         self.fileManager = fileManager
         let directory = storageDirectory ?? fileManager
             .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("PDFViewer", isDirectory: true)
-            .appendingPathComponent("Signatures", isDirectory: true)
+            .appendingPathComponent(libraryFolder, isDirectory: true)
         self.storageDirectory = directory
         self.indexURL = directory.appendingPathComponent("signatures.v1.json")
         loadIndex()
@@ -90,7 +99,15 @@ final class SignatureLibrary: ObservableObject {
         data: Data,
         displayName: String
     ) throws -> StoredSignature {
+        let imageProperties = Self.validatedImageProperties(for: data)
+        if
+            data.count > Self.maximumImageBytes ||
+            (imageProperties?.pixelCount ?? 0) > Self.maximumImagePixels
+        {
+            throw SignatureLibraryError.imageTooLarge
+        }
         guard
+            let imageProperties,
             let image = NSImage(data: data),
             image.size.width > 0,
             image.size.height > 0
@@ -100,7 +117,7 @@ final class SignatureLibrary: ObservableObject {
 
         try ensureStorageDirectory()
         let id = UUID()
-        let fileExtension = data.starts(with: [0xFF, 0xD8]) ? "jpg" : "png"
+        let fileExtension = imageProperties.fileExtension
         let fileName = "\(id.uuidString.lowercased()).\(fileExtension)"
         let imageURL = storageDirectory.appendingPathComponent(fileName)
         do {
@@ -134,9 +151,17 @@ final class SignatureLibrary: ObservableObject {
         displayName: String
     ) throws -> StoredSignature {
         let drawableStrokes = strokes.filter { $0.points.count >= 2 }
-        guard !drawableStrokes.isEmpty,
-              canvasSize.width > 0,
-              canvasSize.height > 0 else {
+        guard
+            !drawableStrokes.isEmpty,
+            drawableStrokes.allSatisfy({ stroke in
+                stroke.points.allSatisfy { $0.x.isFinite && $0.y.isFinite }
+            }),
+            canvasSize.width.isFinite,
+            canvasSize.height.isFinite,
+            canvasSize.width > 0,
+            canvasSize.height > 0,
+            canvasSize.width * canvasSize.height <= CGFloat(Self.maximumImagePixels)
+        else {
             throw SignatureLibraryError.emptyDrawing
         }
 
@@ -176,7 +201,15 @@ final class SignatureLibrary: ObservableObject {
             throw SignatureLibraryError.missingSignature
         }
         do {
-            return try Data(contentsOf: storageDirectory.appendingPathComponent(signature.fileName))
+            let data = try Data(contentsOf: storageDirectory.appendingPathComponent(signature.fileName))
+            guard
+                data.count <= Self.maximumImageBytes,
+                let properties = Self.validatedImageProperties(for: data),
+                properties.pixelCount <= Self.maximumImagePixels
+            else {
+                throw SignatureLibraryError.missingSignature
+            }
+            return data
         } catch {
             throw SignatureLibraryError.missingSignature
         }
@@ -206,10 +239,34 @@ final class SignatureLibrary: ObservableObject {
             signatures = []
             return
         }
+        var seenIDs: Set<UUID> = []
         signatures = decoded
-            .filter {
-                fileManager.fileExists(
-                    atPath: storageDirectory.appendingPathComponent($0.fileName).path
+            .filter { signature in
+                guard
+                    isSafeStoredFilename(signature.fileName, for: signature.id),
+                    signature.aspectRatio.isFinite,
+                    signature.aspectRatio > 0
+                else {
+                    return false
+                }
+                let imageURL = storageDirectory.appendingPathComponent(signature.fileName)
+                guard
+                    let data = try? Data(contentsOf: imageURL),
+                    data.count <= Self.maximumImageBytes,
+                    let properties = Self.validatedImageProperties(for: data),
+                    properties.pixelCount <= Self.maximumImagePixels
+                else {
+                    return false
+                }
+                return seenIDs.insert(signature.id).inserted
+            }
+            .map { signature in
+                StoredSignature(
+                    id: signature.id,
+                    displayName: sanitizedName(signature.displayName),
+                    fileName: signature.fileName,
+                    aspectRatio: signature.aspectRatio,
+                    createdAt: signature.createdAt
                 )
             }
             .sorted { $0.createdAt < $1.createdAt }
@@ -242,6 +299,51 @@ final class SignatureLibrary: ObservableObject {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         return String((trimmed.isEmpty ? "Visual Signature" : trimmed).prefix(80))
     }
+
+    nonisolated fileprivate static func validatedImageProperties(
+        for data: Data
+    ) -> (fileExtension: String, pixelCount: Int)? {
+        guard
+            let source = CGImageSourceCreateWithData(data as CFData, nil),
+            CGImageSourceGetCount(source) > 0,
+            let typeIdentifier = CGImageSourceGetType(source) as String?,
+            typeIdentifier == UTType.png.identifier || typeIdentifier == UTType.jpeg.identifier,
+            let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+            let width = properties[kCGImagePropertyPixelWidth] as? NSNumber,
+            let height = properties[kCGImagePropertyPixelHeight] as? NSNumber,
+            width.doubleValue.isFinite,
+            height.doubleValue.isFinite,
+            width.doubleValue > 0,
+            height.doubleValue > 0
+        else {
+            return nil
+        }
+        let pixelCount = width.doubleValue * height.doubleValue
+        guard pixelCount.isFinite, pixelCount <= Double(Int.max) else {
+            return nil
+        }
+        return (
+            typeIdentifier == UTType.jpeg.identifier ? "jpg" : "png",
+            Int(pixelCount)
+        )
+    }
+
+    private func isSafeStoredFilename(_ fileName: String, for id: UUID) -> Bool {
+        guard
+            (fileName as NSString).lastPathComponent == fileName,
+            !fileName.contains("/"),
+            !fileName.contains("\\"),
+            !fileName.contains(":"),
+            let fileID = UUID(
+                uuidString: (fileName as NSString).deletingPathExtension
+            ),
+            fileID == id
+        else {
+            return false
+        }
+        let fileExtension = (fileName as NSString).pathExtension.lowercased()
+        return fileExtension == "png" || fileExtension == "jpg" || fileExtension == "jpeg"
+    }
 }
 
 /// Custom stamp annotation whose generated PDF appearance stream contains the
@@ -251,12 +353,29 @@ final class VisualSignatureAnnotation: PDFAnnotation {
     static let imageDataKey = PDFAnnotationKey(rawValue: "/PDFViewerSignatureData")
     static let aspectRatioKey = PDFAnnotationKey(rawValue: "/PDFViewerSignatureAspectRatio")
     static let rotationKey = PDFAnnotationKey(rawValue: "/PDFViewerSignatureRotation")
+    static let customStampKey = PDFAnnotationKey(rawValue: "/PDFViewerCustomStamp")
 
     private let signatureImage: NSImage
     private let rotationQuarterTurns: Int
 
-    init(bounds: CGRect, imageData: Data, rotationQuarterTurns: Int = 0) throws {
-        guard let image = NSImage(data: imageData) else {
+    init(
+        bounds: CGRect,
+        imageData: Data,
+        rotationQuarterTurns: Int = 0,
+        isCustomStamp: Bool = false
+    ) throws {
+        guard
+            bounds.origin.x.isFinite,
+            bounds.origin.y.isFinite,
+            bounds.width.isFinite,
+            bounds.height.isFinite,
+            bounds.width > 0,
+            bounds.height > 0,
+            imageData.count <= SignatureLibrary.maximumImageBytes,
+            let properties = SignatureLibrary.validatedImageProperties(for: imageData),
+            properties.pixelCount <= SignatureLibrary.maximumImagePixels,
+            let image = NSImage(data: imageData)
+        else {
             throw SignatureLibraryError.invalidImage
         }
         self.signatureImage = image
@@ -268,6 +387,9 @@ final class VisualSignatureAnnotation: PDFAnnotation {
             forAnnotationKey: Self.aspectRatioKey
         )
         _ = setValue(NSNumber(value: self.rotationQuarterTurns), forAnnotationKey: Self.rotationKey)
+        if isCustomStamp {
+            _ = setValue(NSNumber(value: true), forAnnotationKey: Self.customStampKey)
+        }
     }
 
     override func draw(with box: PDFDisplayBox, in context: CGContext) {
@@ -301,7 +423,11 @@ final class VisualSignatureAnnotation: PDFAnnotation {
     static func imageData(from annotation: PDFAnnotation) -> Data? {
         guard
             let encoded = annotation.value(forAnnotationKey: imageDataKey) as? String,
+            encoded.utf8.count <= ((SignatureLibrary.maximumImageBytes + 2) / 3) * 4,
             let data = Data(base64Encoded: encoded),
+            data.count <= SignatureLibrary.maximumImageBytes,
+            let properties = SignatureLibrary.validatedImageProperties(for: data),
+            properties.pixelCount <= SignatureLibrary.maximumImagePixels,
             NSImage(data: data) != nil
         else {
             return nil
@@ -309,8 +435,13 @@ final class VisualSignatureAnnotation: PDFAnnotation {
         return data
     }
 
+    static func isCustomStamp(_ annotation: PDFAnnotation) -> Bool {
+        (annotation.value(forAnnotationKey: customStampKey) as? NSNumber)?.boolValue == true
+    }
+
     static func aspectRatio(from annotation: PDFAnnotation) -> CGFloat? {
         if let value = annotation.value(forAnnotationKey: aspectRatioKey) as? NSNumber,
+           value.doubleValue.isFinite,
            value.doubleValue > 0 {
             return value.doubleValue
         }

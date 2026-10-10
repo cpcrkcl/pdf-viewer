@@ -56,6 +56,36 @@ enum PDFOCRRasterQuality: Int, CaseIterable, Identifiable, Sendable {
     }
 }
 
+enum PDFOCRLanguage: String, CaseIterable, Identifiable, Sendable {
+    case automatic
+    case englishUS = "en-US"
+    case spanish = "es-ES"
+    case french = "fr-FR"
+    case german = "de-DE"
+    case italian = "it-IT"
+    case portuguese = "pt-BR"
+    case japanese = "ja-JP"
+    case korean = "ko-KR"
+    case chineseSimplified = "zh-Hans"
+
+    var id: Self { self }
+    var recognitionLanguage: String? { self == .automatic ? nil : rawValue }
+    var title: String {
+        switch self {
+        case .automatic: "Automatic"
+        case .englishUS: "English (US)"
+        case .spanish: "Spanish"
+        case .french: "French"
+        case .german: "German"
+        case .italian: "Italian"
+        case .portuguese: "Portuguese (Brazil)"
+        case .japanese: "Japanese"
+        case .korean: "Korean"
+        case .chineseSimplified: "Chinese (Simplified)"
+        }
+    }
+}
+
 struct PDFOCRProgress: Equatable, Sendable {
     let completedPages: Int
     let totalPages: Int
@@ -79,6 +109,7 @@ enum PDFOCRError: LocalizedError, Equatable {
     case recognitionFailed
     case couldNotBuildSearchablePDF
     case invalidCropMargins
+    case documentChangedDuringProcessing
 
     var errorDescription: String? {
         switch self {
@@ -94,6 +125,8 @@ enum PDFOCRError: LocalizedError, Equatable {
             "PDFViewer could not build a validated searchable PDF working copy."
         case .invalidCropMargins:
             "Choose a crop margin between 0 and 20 percent."
+        case .documentChangedDuringProcessing:
+            "The working PDF changed while local processing was running. Review the latest revision and try again."
         }
     }
 }
@@ -222,6 +255,8 @@ enum PDFOCREngine {
         addsSearchableText: Bool,
         enhancement: PDFScanEnhancementPreset,
         rasterQuality: PDFOCRRasterQuality = .balanced,
+        language: PDFOCRLanguage = .automatic,
+        minimumConfidence: Float = 0,
         cropMarginsPercent: Double = 0,
         splitDoublePages: Bool = false,
         progress: @escaping @MainActor (PDFOCRProgress) -> Void
@@ -235,6 +270,9 @@ enum PDFOCREngine {
         guard cropMarginsPercent.isFinite,
               (0...20).contains(cropMarginsPercent) else {
             throw PDFOCRError.invalidCropMargins
+        }
+        guard minimumConfidence.isFinite, (0...1).contains(minimumConfidence) else {
+            throw PDFOCRError.recognitionFailed
         }
 
         let burnedDocument = try annotationBurnedCopy(of: document)
@@ -264,7 +302,9 @@ enum PDFOCREngine {
                     let processed = try await processPage(
                         rendered,
                         enhancement: enhancement,
-                        recognizesText: addsSearchableText
+                        recognizesText: addsSearchableText,
+                        language: language,
+                        minimumConfidence: minimumConfidence
                     )
                     recognizedLineCount += processed.lines.count
                     processedPages.append(
@@ -335,6 +375,14 @@ enum PDFOCREngine {
         }
 
         let bounds = page.bounds(for: .cropBox)
+        guard
+            bounds.width.isFinite,
+            bounds.height.isFinite,
+            bounds.width > 0,
+            bounds.height > 0
+        else {
+            throw PDFOCRError.couldNotRenderPage
+        }
         let maximumDimension: CGFloat = 520
         let scale = min(1, maximumDimension / max(bounds.width, bounds.height))
         let image = page.thumbnail(
@@ -481,20 +529,20 @@ enum PDFOCREngine {
         let pageSize = rotation == 90 || rotation == 270
             ? CGSize(width: cropBounds.height, height: cropBounds.width)
             : cropBounds.size
-        guard pageSize.width >= 2, pageSize.height >= 2 else {
+        guard
+            pageSize.width.isFinite,
+            pageSize.height.isFinite,
+            pageSize.width >= 2,
+            pageSize.height >= 2
+        else {
             throw PDFOCRError.couldNotRenderPage
         }
 
-        let requestedScale = rasterDPI / 72
-        let safeScale = min(
-            requestedScale,
-            sqrt(maximumPixelCount / (pageSize.width * pageSize.height))
-        )
-        let width = max(1, Int(ceil(pageSize.width * safeScale)))
-        let height = max(1, Int(ceil(pageSize.height * safeScale)))
+        let dimensions = try rasterDimensions(pageSize: pageSize, rasterDPI: rasterDPI)
+        let safeScale = dimensions.scale
+        let width = dimensions.width
+        let height = dimensions.height
         guard
-            safeScale.isFinite,
-            safeScale > 0,
             let colorSpace = CGColorSpace(name: CGColorSpace.sRGB),
             let context = CGContext(
                 data: nil,
@@ -528,27 +576,77 @@ enum PDFOCREngine {
         return RenderedOCRPage(image: image, pageSize: pageSize)
     }
 
+    static func rasterDimensions(
+        pageSize: CGSize,
+        rasterDPI: CGFloat
+    ) throws -> (width: Int, height: Int, scale: CGFloat) {
+        guard
+            pageSize.width.isFinite,
+            pageSize.height.isFinite,
+            pageSize.width >= 2,
+            pageSize.height >= 2,
+            rasterDPI.isFinite,
+            rasterDPI > 0
+        else {
+            throw PDFOCRError.couldNotRenderPage
+        }
+
+        let requestedScale = rasterDPI / 72
+        let safeScale = min(
+            requestedScale,
+            sqrt(maximumPixelCount / (pageSize.width * pageSize.height))
+        )
+        let scaledWidth = ceil(pageSize.width * safeScale)
+        let scaledHeight = ceil(pageSize.height * safeScale)
+        guard
+            safeScale.isFinite,
+            safeScale > 0,
+            scaledWidth.isFinite,
+            scaledHeight.isFinite,
+            scaledWidth >= 1,
+            scaledHeight >= 1,
+            scaledWidth <= CGFloat(Int.max),
+            scaledHeight <= CGFloat(Int.max)
+        else {
+            throw PDFOCRError.couldNotRenderPage
+        }
+        return (Int(scaledWidth), Int(scaledHeight), safeScale)
+    }
+
     private static func processPage(
         _ rendered: RenderedOCRPage,
         enhancement: PDFScanEnhancementPreset,
-        recognizesText: Bool
+        recognizesText: Bool,
+        language: PDFOCRLanguage,
+        minimumConfidence: Float
     ) async throws -> ProcessedOCRPage {
         let input = SendableCGImage(rendered.image)
         return try await Task.detached(priority: .userInitiated) {
             try Task.checkCancellation()
             let enhanced = try PDFScanEnhancer.enhancedImage(input.image, preset: enhancement)
-            let lines = recognizesText ? try recognizeText(in: enhanced) : []
+            let lines = recognizesText
+                ? try recognizeText(
+                    in: enhanced,
+                    language: language,
+                    minimumConfidence: minimumConfidence
+                )
+                : []
             return ProcessedOCRPage(image: enhanced, lines: lines)
         }.value
     }
 
     private nonisolated static func recognizeText(
-        in image: CGImage
+        in image: CGImage,
+        language: PDFOCRLanguage,
+        minimumConfidence: Float
     ) throws -> [PDFRecognizedTextLine] {
         let request = VNRecognizeTextRequest()
         request.recognitionLevel = .accurate
         request.usesLanguageCorrection = true
-        request.automaticallyDetectsLanguage = true
+        request.automaticallyDetectsLanguage = language == .automatic
+        if let recognitionLanguage = language.recognitionLanguage {
+            request.recognitionLanguages = [recognitionLanguage]
+        }
         let handler = VNImageRequestHandler(cgImage: image, orientation: .up)
         do {
             try handler.perform([request])
@@ -565,6 +663,7 @@ enum PDFOCREngine {
                 guard !text.isEmpty else {
                     return nil
                 }
+                guard candidate.confidence >= minimumConfidence else { return nil }
                 return PDFRecognizedTextLine(
                     text: text,
                     boundingBox: observation.boundingBox,

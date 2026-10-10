@@ -31,8 +31,15 @@ struct PDFFormField: Identifiable, Equatable {
     let maximumLength: Int?
 
     var displayName: String {
-        let trimmedAlternateName = alternateName?.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmedAlternateName?.isEmpty == false ? trimmedAlternateName! : name
+        guard
+            let trimmedAlternateName = alternateName?.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            ),
+            !trimmedAlternateName.isEmpty
+        else {
+            return name
+        }
+        return trimmedAlternateName
     }
 }
 

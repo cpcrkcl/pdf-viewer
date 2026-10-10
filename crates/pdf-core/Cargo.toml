@@ -1,0 +1,24 @@
+[package]
+name = "pdf-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+pdfium-render.workspace = true
+lopdf.workspace = true
+sha2.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+thiserror.workspace = true
+chrono.workspace = true
+image.workspace = true
+base64.workspace = true
+ab_glyph.workspace = true
+tempfile.workspace = true
+aes-gcm = "0.10"
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -4,6 +4,92 @@ import PDFKit
 import SwiftUI
 import UniformTypeIdentifiers
 
+/// Catppuccin Mocha colors shared by the SwiftUI chrome and PDFKit canvas.
+/// Keeping these values centralized prevents feature sheets from drifting into
+/// a mixture of unrelated system colors as the app grows.
+enum CatppuccinMocha {
+    static let rosewater = Color(red: 245 / 255, green: 224 / 255, blue: 220 / 255)
+    static let flamingo = Color(red: 242 / 255, green: 205 / 255, blue: 205 / 255)
+    static let pink = Color(red: 245 / 255, green: 194 / 255, blue: 231 / 255)
+    static let mauve = Color(red: 203 / 255, green: 166 / 255, blue: 247 / 255)
+    static let red = Color(red: 243 / 255, green: 139 / 255, blue: 168 / 255)
+    static let peach = Color(red: 250 / 255, green: 179 / 255, blue: 135 / 255)
+    static let yellow = Color(red: 249 / 255, green: 226 / 255, blue: 175 / 255)
+    static let green = Color(red: 166 / 255, green: 227 / 255, blue: 161 / 255)
+    static let teal = Color(red: 148 / 255, green: 226 / 255, blue: 213 / 255)
+    static let sky = Color(red: 137 / 255, green: 220 / 255, blue: 235 / 255)
+    static let sapphire = Color(red: 116 / 255, green: 199 / 255, blue: 236 / 255)
+    static let blue = Color(red: 137 / 255, green: 180 / 255, blue: 250 / 255)
+    static let lavender = Color(red: 180 / 255, green: 190 / 255, blue: 254 / 255)
+    static let text = Color(red: 205 / 255, green: 214 / 255, blue: 244 / 255)
+    static let subtext = Color(red: 186 / 255, green: 194 / 255, blue: 222 / 255)
+    static let overlay = Color(red: 127 / 255, green: 132 / 255, blue: 156 / 255)
+    static let surface2 = Color(red: 88 / 255, green: 91 / 255, blue: 112 / 255)
+    static let surface1 = Color(red: 69 / 255, green: 71 / 255, blue: 90 / 255)
+    static let surface0 = Color(red: 49 / 255, green: 50 / 255, blue: 68 / 255)
+    static let base = Color(red: 30 / 255, green: 30 / 255, blue: 46 / 255)
+    static let mantle = Color(red: 24 / 255, green: 24 / 255, blue: 37 / 255)
+    static let crust = Color(red: 17 / 255, green: 17 / 255, blue: 27 / 255)
+
+    static let panelBorder = surface2.opacity(0.55)
+    static let softShadow = Color.black.opacity(0.28)
+}
+
+/// A tinted, rounded-square symbol badge used to give sheets and the welcome
+/// screen a consistent, friendlier visual identity.
+struct IconBadge: View {
+    let systemImage: String
+    var tint: Color = .accentColor
+    var size: CGFloat = 34
+
+    var body: some View {
+        Image(systemName: systemImage)
+            .font(.system(size: size * 0.48, weight: .semibold))
+            .foregroundStyle(CatppuccinMocha.crust)
+            .frame(width: size, height: size)
+            .background(
+                LinearGradient(
+                    colors: [CatppuccinMocha.lavender, tint],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                ),
+                in: RoundedRectangle(cornerRadius: size * 0.26, style: .continuous)
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: size * 0.26, style: .continuous)
+                    .strokeBorder(.white.opacity(0.18))
+            }
+            .shadow(color: tint.opacity(0.28), radius: 6, y: 3)
+            .accessibilityHidden(true)
+    }
+}
+
+/// Standard sheet header: icon badge beside a title and optional subtitle.
+struct SheetHeader: View {
+    let title: String
+    var subtitle: String? = nil
+    let systemImage: String
+    var tint: Color = .accentColor
+
+    var body: some View {
+        HStack(alignment: subtitle == nil ? .center : .top, spacing: 12) {
+            IconBadge(systemImage: systemImage, tint: tint)
+                .padding(.top, subtitle == nil ? 0 : 2)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.title3.weight(.semibold))
+                if let subtitle {
+                    Text(subtitle)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+    }
+}
+
 struct ContentView: View {
     @EnvironmentObject private var appState: AppState
     @State private var isDropTargeted = false
@@ -38,26 +124,14 @@ struct ContentView: View {
         .animation(.easeInOut(duration: 0.2), value: appState.exportReceipt)
         .animation(.easeInOut(duration: 0.15), value: appState.isLoadingDocument)
         .frame(minWidth: 720, minHeight: 520)
+        .tint(CatppuccinMocha.mauve)
+        .preferredColorScheme(.dark)
         .background(
             WindowCloseGuard(
                 appState: appState,
                 closeRequestRevision: appState.windowCloseRequestRevision
             )
         )
-        .fileImporter(
-            isPresented: $appState.isFileImporterPresented,
-            allowedContentTypes: [.pdf],
-            allowsMultipleSelection: false
-        ) { result in
-            appState.handleFileImport(result)
-        }
-        .fileImporter(
-            isPresented: $appState.isImageImporterPresented,
-            allowedContentTypes: [.image],
-            allowsMultipleSelection: true
-        ) { result in
-            appState.handleImageImport(result)
-        }
         .onOpenURL { url in
             appState.requestOpenDocument(at: url)
         }
@@ -85,6 +159,9 @@ struct ContentView: View {
         .sheet(isPresented: $appState.isSignatureLibraryPresented) {
             VisualSignatureLibrarySheet()
         }
+        .sheet(isPresented: $appState.isStampLibraryPresented) {
+            CustomStampLibrarySheet()
+        }
         .sheet(isPresented: $appState.isFormEditorPresented) {
             if let editor = appState.session?.editor {
                 PDFFormEditorSheet(editor: editor)
@@ -102,6 +179,16 @@ struct ContentView: View {
         }
         .sheet(item: $appState.pendingBookmarkRename) { pendingBookmarkRename in
             BookmarkRenameSheet(pendingBookmarkRename: pendingBookmarkRename)
+        }
+        .sheet(item: $appState.pendingPDFComparison) { comparison in
+            if let primary = appState.session?.editor.document {
+                PDFComparisonSheet(
+                    primaryDocument: primary,
+                    primaryName: appState.session?.sourceURL.lastPathComponent ?? "Working Copy",
+                    secondaryDocument: comparison.document,
+                    secondaryName: comparison.displayName
+                )
+            }
         }
         .sheet(
             isPresented: Binding(
@@ -232,22 +319,28 @@ private struct DocumentLoadingOverlay: View {
         VStack(spacing: 14) {
             ProgressView()
                 .controlSize(.large)
-            Text("Preparing PDF…")
-                .font(.headline)
-            Text("Creating a safe local working copy")
-                .font(.callout)
-                .foregroundStyle(.secondary)
+            VStack(spacing: 4) {
+                Text("Preparing PDF…")
+                    .font(.headline)
+                Text("Creating a safe local working copy")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
             Button("Cancel") {
                 appState.cancelDocumentOpen()
             }
             .keyboardShortcut(.cancelAction)
         }
-        .padding(.horizontal, 28)
-        .padding(.vertical, 22)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
-        .shadow(radius: 18, y: 8)
+        .padding(.horizontal, 32)
+        .padding(.vertical, 26)
+        .background(CatppuccinMocha.mantle.opacity(0.96), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .strokeBorder(CatppuccinMocha.panelBorder)
+        }
+        .shadow(color: CatppuccinMocha.softShadow, radius: 26, y: 12)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color.black.opacity(0.12))
+        .background(CatppuccinMocha.crust.opacity(0.72))
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Preparing PDF")
     }
@@ -260,14 +353,14 @@ private struct PasswordUnlockSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            VStack(alignment: .leading, spacing: 5) {
-                Label("Password Required", systemImage: "lock.fill")
-                    .font(.title2.weight(.semibold))
-                Text(appState.pendingDocumentUnlock?.handle.displayName ?? "Protected PDF")
-                    .font(.headline)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .help(appState.pendingDocumentUnlock?.handle.displayName ?? "Protected PDF")
+            VStack(alignment: .leading, spacing: 8) {
+                SheetHeader(
+                    title: "Password Required",
+                    subtitle: appState.pendingDocumentUnlock?.handle.displayName ?? "Protected PDF",
+                    systemImage: "lock.fill",
+                    tint: .gray
+                )
+                .help(appState.pendingDocumentUnlock?.handle.displayName ?? "Protected PDF")
                 Text("Enter the PDF password. PDFViewer keeps it only for this open document and never stores it.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
@@ -329,13 +422,12 @@ private struct TextNoteEditorSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(pendingTextNote.isEditingExistingNote ? "Edit Text Note" : "Add Text Note")
-                    .font(.title2.weight(.semibold))
-                Text("The note is stored in the working PDF and becomes permanent only in an exported copy.")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-            }
+            SheetHeader(
+                title: pendingTextNote.isEditingExistingNote ? "Edit Text Note" : "Add Text Note",
+                subtitle: "The note is stored in the working PDF and becomes permanent only in an exported copy.",
+                systemImage: "note.text",
+                tint: .yellow
+            )
 
             TextEditor(text: $text)
                 .font(.body)
@@ -387,12 +479,12 @@ private struct ExportSuccessBanner: View {
             compactContent
         }
         .padding(14)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+        .background(CatppuccinMocha.mantle.opacity(0.96), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 12)
-                .strokeBorder(.quaternary)
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(CatppuccinMocha.green.opacity(0.45))
         }
-        .shadow(radius: 10, y: 4)
+        .shadow(color: CatppuccinMocha.softShadow, radius: 18, y: 8)
         .frame(maxWidth: 520)
     }
 
@@ -423,9 +515,19 @@ private struct ExportSuccessBanner: View {
     }
 
     private var successIcon: some View {
-        Image(systemName: "checkmark.circle.fill")
-            .foregroundStyle(.green)
-            .font(.title2)
+        Image(systemName: "checkmark")
+            .font(.system(size: 12, weight: .bold))
+            .foregroundStyle(CatppuccinMocha.crust)
+            .frame(width: 26, height: 26)
+            .background(
+                LinearGradient(
+                    colors: [CatppuccinMocha.teal, CatppuccinMocha.green],
+                    startPoint: .top,
+                    endPoint: .bottom
+                ),
+                in: Circle()
+            )
+            .shadow(color: CatppuccinMocha.green.opacity(0.28), radius: 5, y: 2)
             .accessibilityHidden(true)
     }
 
@@ -494,19 +596,24 @@ private struct DropTargetOverlay: View {
             let inset = min(18, max(10, shortestDimension * 0.025))
 
             ZStack {
-                Color.accentColor.opacity(0.12)
-                RoundedRectangle(cornerRadius: 18)
+                CatppuccinMocha.mauve.opacity(0.14)
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
                     .strokeBorder(
-                        Color.accentColor,
-                        style: StrokeStyle(lineWidth: 3, dash: [9])
+                        CatppuccinMocha.mauve.opacity(0.9),
+                        style: StrokeStyle(lineWidth: 2.5, dash: [9])
                     )
                     .padding(inset)
 
                 Label("Drop PDF to Open", systemImage: "doc.badge.plus")
                     .font(.title2.weight(.semibold))
-                    .padding(.horizontal, 20)
+                    .foregroundStyle(CatppuccinMocha.lavender)
+                    .padding(.horizontal, 22)
                     .padding(.vertical, 14)
                     .background(.regularMaterial, in: Capsule())
+                    .overlay {
+                        Capsule().strokeBorder(CatppuccinMocha.mauve.opacity(0.5))
+                    }
+                    .shadow(color: .black.opacity(0.12), radius: 10, y: 4)
                     .padding(inset)
             }
         }
@@ -635,84 +742,225 @@ private struct WelcomeView: View {
     @EnvironmentObject private var appState: AppState
     @Environment(\.openWindow) private var openWindow
     @ObservedObject var recentDocuments: RecentDocumentsStore
+    @State private var hoveredDocumentID: RecentDocument.ID?
 
     var body: some View {
         ScrollView {
             VStack(spacing: 24) {
-                ContentUnavailableView {
-                    Label("Open a PDF", systemImage: "doc.richtext")
-                } description: {
-                    Text("Read and organize a local document without changing the original file.")
-                } actions: {
-                    Button("Choose PDF...") {
-                        appState.isFileImporterPresented = true
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .keyboardShortcut(.defaultAction)
-                }
-
-                Button("Create PDF From Images…") {
-                    appState.chooseImagesForPDFCreation()
-                }
-                .accessibilityLabel("Create PDF From Images")
-
+                hero
+                featureHighlights
                 if !recentDocuments.documents.isEmpty {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Recent Documents")
-                            .font(.headline)
-
-                        ForEach(recentDocuments.documents) { document in
-                            HStack(spacing: 8) {
-                                Button {
-                                    appState.openRecentDocument(document)
-                                } label: {
-                                    HStack(spacing: 10) {
-                                        Image(systemName: "doc")
-                                            .foregroundStyle(.secondary)
-                                        Text(document.displayName)
-                                            .lineLimit(1)
-                                            .truncationMode(.middle)
-                                            .help(document.displayName)
-                                        Spacer(minLength: 20)
-                                        Text(document.lastOpenedAt, style: .relative)
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                    }
-                                    .contentShape(Rectangle())
-                                }
-                                .buttonStyle(.plain)
-                                .accessibilityLabel("Open recent document \(document.displayName)")
-
-                                Button {
-                                    guard let url = appState.resolveRecentDocumentURL(document) else {
-                                        return
-                                    }
-                                    openWindow(value: WindowLaunchRequest(url: url))
-                                } label: {
-                                    Image(systemName: "doc")
-                                        .overlay(alignment: .topTrailing) {
-                                            Image(systemName: "plus.circle.fill")
-                                                .font(.system(size: 8))
-                                                .offset(x: 4, y: -4)
-                                        }
-                                }
-                                .buttonStyle(.borderless)
-                                .help("Open in New Window")
-                                .accessibilityLabel(
-                                    "Open \(document.displayName) in a new window"
-                                )
-                            }
-                            .padding(.vertical, 5)
-                        }
-                    }
-                    .padding(16)
-                    .background(.quaternary.opacity(0.6), in: RoundedRectangle(cornerRadius: 12))
+                    recentDocumentsCard
                 }
+                Label("You can also drop a PDF anywhere in this window", systemImage: "arrow.down.doc")
+                    .font(.callout)
+                    .foregroundStyle(.tertiary)
             }
-            .frame(maxWidth: 520)
+            .frame(maxWidth: 620)
             .frame(maxWidth: .infinity)
-            .padding(20)
+            .padding(.horizontal, 28)
+            .padding(.top, 38)
+            .padding(.bottom, 32)
         }
+        .background {
+            ZStack {
+                CatppuccinMocha.base
+                RadialGradient(
+                    colors: [CatppuccinMocha.mauve.opacity(0.20), .clear],
+                    center: UnitPoint(x: 0.22, y: 0.05),
+                    startRadius: 10,
+                    endRadius: 470
+                )
+                RadialGradient(
+                    colors: [CatppuccinMocha.blue.opacity(0.10), .clear],
+                    center: UnitPoint(x: 0.84, y: 0.48),
+                    startRadius: 20,
+                    endRadius: 420
+                )
+            }
+            .ignoresSafeArea()
+        }
+    }
+
+    private var hero: some View {
+        VStack(spacing: 20) {
+            Image(systemName: "doc.richtext.fill")
+                .font(.system(size: 38, weight: .semibold))
+                .foregroundStyle(CatppuccinMocha.crust)
+                .frame(width: 82, height: 82)
+                .background(
+                    LinearGradient(
+                        colors: [CatppuccinMocha.lavender, CatppuccinMocha.mauve],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    in: RoundedRectangle(cornerRadius: 22, style: .continuous)
+                )
+                .overlay {
+                    RoundedRectangle(cornerRadius: 22, style: .continuous)
+                        .strokeBorder(.white.opacity(0.2))
+                }
+                .shadow(color: CatppuccinMocha.mauve.opacity(0.34), radius: 22, y: 10)
+                .accessibilityHidden(true)
+
+            VStack(spacing: 8) {
+                Text("PDFViewer")
+                    .font(.system(size: 30, weight: .bold, design: .rounded))
+                    .foregroundStyle(CatppuccinMocha.text)
+                Text("A focused workspace for reading, annotating, and organizing PDFs—entirely on your Mac.")
+                    .font(.callout)
+                    .foregroundStyle(CatppuccinMocha.subtext)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 460)
+            }
+
+            HStack(spacing: 12) {
+                Button {
+                    appState.presentOpenPDFPanel()
+                } label: {
+                    Label("Choose PDF...", systemImage: "folder.badge.plus")
+                        .fontWeight(.semibold)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .keyboardShortcut(.defaultAction)
+
+                Button {
+                    appState.chooseImagesForPDFCreation()
+                } label: {
+                    Label("From Images…", systemImage: "photo.on.rectangle.angled")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.large)
+                .accessibilityLabel("Create PDF From Images")
+            }
+        }
+        .padding(.horizontal, 34)
+        .padding(.vertical, 30)
+        .frame(maxWidth: .infinity)
+        .background(CatppuccinMocha.mantle.opacity(0.86), in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .strokeBorder(CatppuccinMocha.panelBorder)
+        }
+        .shadow(color: CatppuccinMocha.softShadow, radius: 30, y: 14)
+    }
+
+    private var featureHighlights: some View {
+        HStack(spacing: 0) {
+            featureHighlight("Annotate", systemImage: "pencil.and.outline", tint: CatppuccinMocha.peach)
+            featureHighlight("Organize", systemImage: "square.grid.2x2", tint: CatppuccinMocha.blue)
+            featureHighlight("Fill Forms", systemImage: "list.bullet.rectangle", tint: CatppuccinMocha.green)
+            featureHighlight("OCR", systemImage: "doc.text.viewfinder", tint: CatppuccinMocha.teal)
+            featureHighlight("Redact", systemImage: "eye.slash", tint: CatppuccinMocha.pink)
+        }
+        .padding(.vertical, 14)
+        .padding(.horizontal, 8)
+        .background(CatppuccinMocha.surface0.opacity(0.66), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .strokeBorder(CatppuccinMocha.panelBorder)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Features: annotate, organize, fill forms, OCR, and redact")
+    }
+
+    private func featureHighlight(_ title: String, systemImage: String, tint: Color) -> some View {
+        VStack(spacing: 7) {
+            Image(systemName: systemImage)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(tint)
+                .frame(width: 32, height: 32)
+                .background(tint.opacity(0.14), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+            Text(title)
+                .font(.caption.weight(.medium))
+                .foregroundStyle(CatppuccinMocha.subtext)
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private var recentDocumentsCard: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Recent Documents")
+                .font(.headline)
+                .padding(.horizontal, 10)
+                .padding(.top, 12)
+                .padding(.bottom, 6)
+
+            ForEach(recentDocuments.documents) { document in
+                recentDocumentRow(document)
+            }
+        }
+        .padding(6)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(CatppuccinMocha.mantle.opacity(0.84), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .strokeBorder(CatppuccinMocha.panelBorder)
+        }
+    }
+
+    private func recentDocumentRow(_ document: RecentDocument) -> some View {
+        HStack(spacing: 10) {
+            Button {
+                appState.openRecentDocument(document)
+            } label: {
+                HStack(spacing: 11) {
+                    Image(systemName: "doc.text.fill")
+                        .font(.system(size: 13))
+                        .foregroundStyle(CatppuccinMocha.lavender)
+                        .frame(width: 28, height: 28)
+                        .background(
+                            CatppuccinMocha.mauve.opacity(0.14),
+                            in: RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        )
+
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(document.displayName)
+                            .fontWeight(.medium)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .help(document.displayName)
+                        Text(document.lastOpenedAt, style: .relative)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Spacer(minLength: 12)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Open recent document \(document.displayName)")
+
+            Button {
+                guard let url = appState.resolveRecentDocumentURL(document) else {
+                    return
+                }
+                openWindow(value: WindowLaunchRequest(url: url))
+            } label: {
+                Image(systemName: "macwindow.badge.plus")
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.borderless)
+            .help("Open in New Window")
+            .accessibilityLabel(
+                "Open \(document.displayName) in a new window"
+            )
+            .opacity(hoveredDocumentID == document.id ? 1 : 0.35)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(
+            hoveredDocumentID == document.id
+                ? AnyShapeStyle(CatppuccinMocha.surface0.opacity(0.9))
+                : AnyShapeStyle(.clear),
+            in: RoundedRectangle(cornerRadius: 9, style: .continuous)
+        )
+        .onHover { isHovered in
+            hoveredDocumentID = isHovered ? document.id : nil
+        }
+        .animation(.easeOut(duration: 0.12), value: hoveredDocumentID == document.id)
     }
 }
 
@@ -730,8 +978,11 @@ private struct BookmarkRenameSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Rename Bookmark")
-                .font(.title2.weight(.semibold))
+            SheetHeader(
+                title: "Rename Bookmark",
+                systemImage: "bookmark.fill",
+                tint: .orange
+            )
 
             TextField("Bookmark name", text: $label)
                 .focused($isLabelFocused)
@@ -785,16 +1036,12 @@ private struct VisualSignatureLibrarySheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            VStack(alignment: .leading, spacing: 5) {
-                Text("Visual Signatures")
-                    .font(.title2.weight(.semibold))
-                Text(
-                    "Choose a locally stored signature image to place on the PDF. This is a visual mark only—not a cryptographic or identity-verified signature."
-                )
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            }
+            SheetHeader(
+                title: "Visual Signatures",
+                subtitle: "Choose a locally stored signature image to place on the PDF. This is a visual mark only—not a cryptographic or identity-verified signature.",
+                systemImage: "signature",
+                tint: .indigo
+            )
 
             if appState.signatureLibrary.signatures.isEmpty {
                 ContentUnavailableView(
@@ -840,10 +1087,7 @@ private struct VisualSignatureLibrarySheet: View {
             allowedContentTypes: [.png, .jpeg],
             allowsMultipleSelection: false
         ) { result in
-            guard case .success(let urls) = result, let url = urls.first else {
-                return
-            }
-            appState.importVisualSignature(at: url)
+            appState.handleVisualSignatureImport(result)
         }
         .sheet(isPresented: $isDrawingPresented) {
             SignatureDrawingSheet()
@@ -916,6 +1160,66 @@ private struct VisualSignatureLibrarySheet: View {
     }
 }
 
+private struct CustomStampLibrarySheet: View {
+    @EnvironmentObject private var appState: AppState
+    @State private var isImporterPresented = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            SheetHeader(
+                title: "Custom Stamps",
+                subtitle: "Import PNG or JPEG artwork into a local-only stamp library.",
+                systemImage: "seal.fill",
+                tint: .teal
+            )
+
+            if appState.stampLibrary.signatures.isEmpty {
+                ContentUnavailableView("No Custom Stamps", systemImage: "seal")
+                    .frame(maxWidth: .infinity, minHeight: 220)
+            } else {
+                List(appState.stampLibrary.signatures) { stamp in
+                    HStack(spacing: 12) {
+                        if
+                            let data = try? appState.stampLibrary.imageData(for: stamp.id),
+                            let image = NSImage(data: data)
+                        {
+                            Image(nsImage: image)
+                                .resizable().scaledToFit()
+                                .frame(width: 90, height: 56)
+                        }
+                        Text(stamp.displayName)
+                        Spacer()
+                        Button("Use") { appState.chooseCustomStamp(stamp) }
+                            .buttonStyle(.borderedProminent)
+                        Button("Delete", role: .destructive) {
+                            appState.deleteCustomStamp(stamp)
+                        }
+                    }
+                }
+            }
+
+            Divider()
+            HStack {
+                Button("Import Artwork…") { isImporterPresented = true }
+                Spacer()
+                Button("Close") { appState.isStampLibraryPresented = false }
+                    .keyboardShortcut(.cancelAction)
+            }
+        }
+        .padding(20)
+        .frame(minWidth: 560, minHeight: 420)
+        .fileImporter(
+            isPresented: $isImporterPresented,
+            allowedContentTypes: [.png, .jpeg],
+            allowsMultipleSelection: false
+        ) { result in
+            if case .success(let urls) = result, let url = urls.first {
+                appState.importCustomStamp(at: url)
+            }
+        }
+    }
+}
+
 private struct SignatureDrawingSheet: View {
     @EnvironmentObject private var appState: AppState
     @Environment(\.dismiss) private var dismiss
@@ -927,12 +1231,12 @@ private struct SignatureDrawingSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Draw Visual Signature")
-                .font(.title2.weight(.semibold))
-            Text("Draw with the mouse or trackpad. The result is stored only on this Mac and is not a cryptographic signature.")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            SheetHeader(
+                title: "Draw Visual Signature",
+                subtitle: "Draw with the mouse or trackpad. The result is stored only on this Mac and is not a cryptographic signature.",
+                systemImage: "pencil.tip",
+                tint: .indigo
+            )
 
             TextField("Signature name", text: $name)
                 .textFieldStyle(.roundedBorder)
@@ -975,7 +1279,15 @@ private struct SignatureDrawingSheet: View {
                 }
                 Button("Add Signature") {
                     let inkStrokes = strokes.map {
-                        InkStroke(pageIndex: 0, points: $0)
+                        InkStroke(
+                            pageIndex: 0,
+                            points: $0.map { point in
+                                CGPoint(
+                                    x: point.x,
+                                    y: canvasSize.height - point.y
+                                )
+                            }
+                        )
                     }
                     appState.createVisualSignature(
                         strokes: inkStrokes,
@@ -1038,9 +1350,86 @@ private struct AnnotationToolSymbol: View {
     }
 }
 
+/// Chooses between a regular and a compact layout based on the width the
+/// container offers, like `ViewThatFits`, but without re-measuring every
+/// candidate subtree on each layout pass. During a live window resize AppKit
+/// asks the SwiftUI hosting view for a fresh layout *and* fresh min/max size
+/// constraints on every frame, and `ViewThatFits` rebuilds and measures all of
+/// its candidates for each of those passes, which made resizing the window
+/// visibly lag. This container instead measures the regular tier's natural
+/// width in a hidden, inert probe whose layout proposal never changes (so the
+/// measurement is cached until the tier's content changes) and builds only the
+/// selected tier.
+private struct WidthAdaptiveRow<Regular: View, Compact: View>: View {
+    @State private var showsRegular = true
+    @State private var regularNaturalWidth: CGFloat?
+    @State private var latestRowWidth = MutableBox<CGFloat>()
+
+    @ViewBuilder let regular: () -> Regular
+    @ViewBuilder let compact: () -> Compact
+
+    var body: some View {
+        Group {
+            if showsRegular {
+                regular()
+            } else {
+                compact()
+            }
+        }
+        // Reporting exactly the proposed width keeps the hosting view's
+        // min-size pass from descending into a fixed-width regular tier and
+        // locking the window's minimum width to that tier's natural width.
+        .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+        .background(alignment: .leading) {
+            measurementProbe
+        }
+        .onGeometryChange(for: CGFloat.self) { proxy in
+            proxy.size.width
+        } action: { width in
+            latestRowWidth.value = width
+            showsRegular = regularFits(in: width)
+        }
+        .onChange(of: regularNaturalWidth) {
+            // The probe can deliver its first measurement after the row's
+            // geometry callback already ran, so re-evaluate the choice.
+            guard let rowWidth = latestRowWidth.value else {
+                return
+            }
+            showsRegular = regularFits(in: rowWidth)
+        }
+    }
+
+    private var measurementProbe: some View {
+        regular()
+            .fixedSize()
+            .onGeometryChange(for: CGFloat.self) { proxy in
+                proxy.size.width
+            } action: { width in
+                regularNaturalWidth = width
+            }
+            .hidden()
+            .disabled(true)
+            .accessibilityHidden(true)
+            .frame(width: 0, height: 0)
+    }
+
+    private func regularFits(in rowWidth: CGFloat) -> Bool {
+        guard let regularNaturalWidth else {
+            return true
+        }
+        return regularNaturalWidth <= rowWidth + 0.5
+    }
+}
+
+private final class MutableBox<Value> {
+    var value: Value?
+}
+
 private struct ReaderWorkspace: View {
     @EnvironmentObject private var appState: AppState
     @FocusState private var isSearchFieldFocused: Bool
+    @State private var isSearchResultsPresented = false
+    @State private var isDocumentNavigatorPresented = false
 
     @ObservedObject var editor: PDFDocumentEditor
     let sourceURL: URL
@@ -1061,6 +1450,12 @@ private struct ReaderWorkspace: View {
                 await Task.yield()
                 NSApp.sendAction(#selector(NSText.selectAll(_:)), to: nil, from: nil)
             }
+        }
+        .sheet(isPresented: $isSearchResultsPresented) {
+            SearchResultsSheet(editor: editor, search: search)
+        }
+        .sheet(isPresented: $isDocumentNavigatorPresented) {
+            AnnotationFormNavigatorSheet(editor: editor)
         }
     }
 
@@ -1113,23 +1508,46 @@ private struct ReaderWorkspace: View {
     private var readerToolbar: some View {
         VStack(alignment: .leading, spacing: 8) {
             documentHeaderControls
+            Rectangle()
+                .fill(CatppuccinMocha.surface1.opacity(0.65))
+                .frame(height: 1)
             adaptiveReaderControls
             if annotations.isActive {
                 adaptiveAnnotationControls
             }
             if appState.redactionState.isActive {
                 redactionControls
+                    .padding(8)
+                    .background(
+                        CatppuccinMocha.red.opacity(0.08),
+                        in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    )
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .strokeBorder(CatppuccinMocha.red.opacity(0.25))
+                    }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .controlSize(.regular)
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
-        .background(.bar)
+        .background(
+            LinearGradient(
+                colors: [CatppuccinMocha.mantle, CatppuccinMocha.crust.opacity(0.96)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        )
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(CatppuccinMocha.surface1.opacity(0.75))
+                .frame(height: 1)
+        }
     }
 
     private var adaptiveReaderControls: some View {
-        ViewThatFits(in: .horizontal) {
+        WidthAdaptiveRow {
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 14) {
                     displayModePicker
@@ -1143,14 +1561,14 @@ private struct ReaderWorkspace: View {
                 }
             }
             .fixedSize(horizontal: true, vertical: false)
-
-            ViewThatFits(in: .horizontal) {
+        } compact: {
+            WidthAdaptiveRow {
                 HStack(spacing: 12) {
                     compactReaderControls
                     searchControls(compact: true)
                 }
                 .fixedSize(horizontal: true, vertical: false)
-
+            } compact: {
                 VStack(alignment: .leading, spacing: 8) {
                     compactReaderControls
                     searchControls(compact: true)
@@ -1161,18 +1579,85 @@ private struct ReaderWorkspace: View {
     }
 
     private var documentHeaderControls: some View {
+        WidthAdaptiveRow {
+            HStack(spacing: 8) {
+                thumbnailSidebarButton
+                navigationHistoryControls
+                openDocumentButton
+                organizeButton
+                annotateButton
+                documentToolsMenu
+                exportButton
+                documentFilename
+                closeDocumentButton
+            }
+            .fixedSize(horizontal: true, vertical: false)
+        } compact: {
+            compactDocumentHeaderControls
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var compactDocumentHeaderControls: some View {
         HStack(spacing: 8) {
             thumbnailSidebarButton
             navigationHistoryControls
-            openDocumentButton
-            organizeButton
-            annotateButton
+
+            Button {
+                appState.presentOpenPDFPanel()
+            } label: {
+                Image(systemName: "folder")
+            }
+            .help("Open")
+            .accessibilityLabel("Open")
+
+            Button {
+                appState.presentPageOrganizer()
+            } label: {
+                Image(systemName: "square.grid.2x2")
+            }
+            .help("Select and organize pages")
+            .accessibilityLabel("Organize")
+
+            Button {
+                appState.toggleAnnotationMode()
+            } label: {
+                Image(
+                    systemName: annotations.isActive
+                        ? "pencil.circle.fill"
+                        : "pencil.and.outline"
+                )
+            }
+            .accessibilityLabel(annotations.isActive ? "Done Annotating" : "Annotate")
+            .disabled(!annotations.isActive && !appState.canCommentOnActiveDocument)
+            .help(
+                !appState.canCommentOnActiveDocument
+                    ? "The PDF's permissions do not allow commenting."
+                    : (annotations.isActive ? "Finish annotating" : "Add annotations")
+            )
+
             documentToolsMenu
-            exportButton
-            documentFilename
-            closeDocumentButton
+
+            Button {
+                appState.exportWorkingCopy()
+            } label: {
+                Image(systemName: "square.and.arrow.up")
+            }
+            .help("Export a new PDF without changing the original")
+            .accessibilityLabel("Export")
+
+            Spacer(minLength: 0)
+
+            Button {
+                appState.requestCloseDocument()
+            } label: {
+                Image(systemName: "xmark")
+            }
+            .help("Close Document")
+            .accessibilityLabel("Close Document")
+            .accessibilityIdentifier("Close Document")
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .fixedSize(horizontal: false, vertical: true)
     }
 
     private var compactReaderControls: some View {
@@ -1225,7 +1710,7 @@ private struct ReaderWorkspace: View {
 
     private var openDocumentButton: some View {
         Button {
-            appState.isFileImporterPresented = true
+            appState.presentOpenPDFPanel()
         } label: {
             Label("Open", systemImage: "folder")
         }
@@ -1287,6 +1772,12 @@ private struct ReaderWorkspace: View {
             .disabled(!appState.canFillFormsInActiveDocument)
 
             Button {
+                isDocumentNavigatorPresented = true
+            } label: {
+                Label("Annotations & Form Navigator…", systemImage: "list.bullet.rectangle.portrait")
+            }
+
+            Button {
                 appState.toggleRedactionMode()
             } label: {
                 Label(
@@ -1309,6 +1800,12 @@ private struct ReaderWorkspace: View {
                 Label("Local Conversion…", systemImage: "arrow.triangle.2.circlepath.doc.on.clipboard")
             }
             .disabled(!appState.canConvertActiveDocument)
+
+            Button {
+                appState.presentComparePDFPanel()
+            } label: {
+                Label("Compare Side by Side…", systemImage: "rectangle.split.2x1")
+            }
         } label: {
             Label("Tools", systemImage: "wrench.and.screwdriver")
         }
@@ -1373,7 +1870,7 @@ private struct ReaderWorkspace: View {
     }
 
     private var redactionControls: some View {
-        ViewThatFits(in: .horizontal) {
+        WidthAdaptiveRow {
             HStack(spacing: 10) {
                 Label("Draw rectangles over content to remove", systemImage: "viewfinder.rectangular")
                     .font(.callout.weight(.semibold))
@@ -1382,6 +1879,8 @@ private struct ReaderWorkspace: View {
                 redactionReasonField
                 redactionActionButtons
             }
+            .fixedSize(horizontal: true, vertical: false)
+        } compact: {
             VStack(alignment: .leading, spacing: 6) {
                 Label("Draw rectangles over content to remove", systemImage: "viewfinder.rectangular")
                     .font(.callout.weight(.semibold))
@@ -1439,9 +1938,10 @@ private struct ReaderWorkspace: View {
     }
 
     private var adaptiveAnnotationControls: some View {
-        ViewThatFits(in: .horizontal) {
+        WidthAdaptiveRow {
             regularAnnotationControls
                 .fixedSize(horizontal: true, vertical: false)
+        } compact: {
             compactAnnotationControls
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -1529,8 +2029,10 @@ private struct ReaderWorkspace: View {
                     appState.setAnnotationColor(color)
                 }
             }
+            Divider()
+            ColorPicker("Custom Color", selection: customAnnotationColorBinding, supportsOpacity: true)
         } label: {
-            Label("Color: \(annotations.selectedColor.title)", systemImage: "paintpalette")
+            Label("Color: \(annotations.colorTitle)", systemImage: "paintpalette")
         }
         .fixedSize()
     }
@@ -1555,6 +2057,8 @@ private struct ReaderWorkspace: View {
                             appState.setAnnotationColor(color)
                         }
                     }
+                    Divider()
+                    ColorPicker("Custom Color", selection: customAnnotationColorBinding, supportsOpacity: true)
                 }
             }
 
@@ -1646,6 +2150,7 @@ private struct ReaderWorkspace: View {
             appState.endAnnotationMode()
         }
         .buttonStyle(.borderedProminent)
+        .tint(CatppuccinMocha.mauve)
         .fixedSize()
     }
 
@@ -1663,6 +2168,13 @@ private struct ReaderWorkspace: View {
         )
     }
 
+    private var customAnnotationColorBinding: Binding<Color> {
+        Binding(
+            get: { Color(nsColor: annotations.effectiveColor) },
+            set: { appState.setCustomAnnotationColor(NSColor($0)) }
+        )
+    }
+
     private var annotationSignatureSizePicker: some View {
         Picker("Visual Signature Size", selection: annotationSignatureSizeBinding) {
             ForEach(SignatureSizePreset.allCases) { size in
@@ -1674,12 +2186,20 @@ private struct ReaderWorkspace: View {
     }
 
     private var annotationStampPicker: some View {
-        Picker("Stamp", selection: annotationStampBinding) {
+        Menu {
             ForEach(StampPreset.allCases) { preset in
-                Text(preset.title).tag(preset)
+                Button(preset.title) { appState.setStampPreset(preset) }
             }
+            Divider()
+            Button("Custom Stamp Library…") { appState.presentStampLibrary() }
+        } label: {
+            Label(
+                annotations.selectedCustomStampID == nil
+                    ? annotations.selectedStamp.title
+                    : "Custom Stamp",
+                systemImage: "seal"
+            )
         }
-        .pickerStyle(.menu)
         .fixedSize(horizontal: true, vertical: false)
     }
 
@@ -1708,14 +2228,26 @@ private struct ReaderWorkspace: View {
     }
 
     private var documentFilename: some View {
-        Text(sourceURL.lastPathComponent)
-            .font(.headline)
-            .lineLimit(1)
-            .truncationMode(.middle)
-            .frame(minWidth: 100, maxWidth: .infinity, alignment: .leading)
-            .layoutPriority(1)
-            .help(sourceURL.lastPathComponent)
-            .accessibilityLabel("Document \(sourceURL.lastPathComponent)")
+        HStack(spacing: 7) {
+            Image(systemName: "doc.text.fill")
+                .foregroundStyle(CatppuccinMocha.lavender)
+                .accessibilityHidden(true)
+            Text(sourceURL.lastPathComponent)
+                .font(.headline)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            if state.isDocumentDirty {
+                Circle()
+                    .fill(CatppuccinMocha.peach)
+                    .frame(width: 7, height: 7)
+                    .help("Working copy has unexported changes")
+                    .accessibilityLabel("Unexported changes")
+            }
+        }
+        .frame(minWidth: 100, maxWidth: .infinity, alignment: .leading)
+        .layoutPriority(1)
+        .help(sourceURL.lastPathComponent)
+        .accessibilityLabel("Document \(sourceURL.lastPathComponent)")
     }
 
     private var displayModePicker: some View {
@@ -1756,6 +2288,11 @@ private struct ReaderWorkspace: View {
                 .foregroundStyle(.secondary)
                 .monospacedDigit()
                 .fixedSize()
+
+            Text("(\(state.pageLabel(for: state.selectedPageIndex, in: editor.document)))")
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .help("Displayed page label")
 
             Button {
                 state.requestZoom(.zoomOut)
@@ -1805,6 +2342,18 @@ private struct ReaderWorkspace: View {
                 ForEach(ReaderTheme.allCases) { theme in
                     Text(theme.title).tag(theme)
                 }
+            }
+
+            Divider()
+
+            Picker("Page Labels", selection: $state.pageLabelStyle) {
+                ForEach(PageLabelStyle.allCases) { style in
+                    Text(style.title).tag(style)
+                }
+            }
+            if state.pageLabelStyle != .document {
+                Stepper("First label: \(state.pageLabelStart)", value: $state.pageLabelStart, in: 1...9999)
+                TextField("Label prefix", text: $state.pageLabelPrefix)
             }
 
             Divider()
@@ -1970,7 +2519,13 @@ private struct ReaderWorkspace: View {
             Image(systemName: "magnifyingglass")
                 .foregroundStyle(.secondary)
 
-            TextField("Search text", text: $search.query)
+            TextField(
+                "Search text",
+                text: Binding(
+                    get: { search.query },
+                    set: { search.updateQuery($0) }
+                )
+            )
                 .frame(
                     minWidth: compact ? 120 : 180,
                     idealWidth: compact ? 150 : 180,
@@ -2009,6 +2564,41 @@ private struct ReaderWorkspace: View {
             .disabled(search.matchCount == 0)
             .help("Next Search Result")
 
+            Menu {
+                Toggle(
+                    "Case Sensitive",
+                    isOn: Binding(
+                        get: { search.options.isCaseSensitive },
+                        set: {
+                            appState.updateSearchOptions(
+                                caseSensitive: $0,
+                                wholeWords: search.options.matchesWholeWords
+                            )
+                        }
+                    )
+                )
+                Toggle(
+                    "Whole Words",
+                    isOn: Binding(
+                        get: { search.options.matchesWholeWords },
+                        set: {
+                            appState.updateSearchOptions(
+                                caseSensitive: search.options.isCaseSensitive,
+                                wholeWords: $0
+                            )
+                        }
+                    )
+                )
+                Divider()
+                Button("Show Match List…") {
+                    isSearchResultsPresented = true
+                }
+                .disabled(search.matchCount == 0)
+            } label: {
+                Image(systemName: "line.3.horizontal.decrease.circle")
+            }
+            .help("Search Options and Match List")
+
             Button {
                 appState.clearSearch()
             } label: {
@@ -2016,6 +2606,16 @@ private struct ReaderWorkspace: View {
             }
             .disabled(search.query.isEmpty && search.matchCount == 0)
             .help("Clear Search")
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(
+            CatppuccinMocha.surface0.opacity(0.72),
+            in: RoundedRectangle(cornerRadius: 9, style: .continuous)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .strokeBorder(CatppuccinMocha.panelBorder)
         }
         .fixedSize(horizontal: true, vertical: false)
     }
@@ -2027,6 +2627,324 @@ private struct ReaderWorkspace: View {
                 appState.navigateToPage(number: pageNumber)
             }
         )
+    }
+}
+
+private struct SearchResultsSheet: View {
+    @EnvironmentObject private var appState: AppState
+    @Environment(\.dismiss) private var dismiss
+    @ObservedObject var editor: PDFDocumentEditor
+    @ObservedObject var search: PDFSearchController
+    @State private var selectedMatchIndexes: Set<Int> = []
+
+    private var summaries: [PDFSearchMatchSummary] {
+        search.summaries(in: editor.document)
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(alignment: .top) {
+                SheetHeader(
+                    title: "Search Matches",
+                    subtitle: "Select matches to navigate or turn into permanent-redaction candidates.",
+                    systemImage: "text.magnifyingglass",
+                    tint: .blue
+                )
+                Spacer()
+                Text("\(summaries.count) matches")
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+            .padding(18)
+
+            Divider()
+
+            List(summaries, selection: $selectedMatchIndexes) { summary in
+                Button {
+                    selectedMatchIndexes = [summary.id]
+                    appState.selectSearchResult(at: summary.id)
+                } label: {
+                    HStack {
+                        Text("Page \(summary.pageNumber)")
+                            .fontWeight(.semibold)
+                            .frame(width: 76, alignment: .leading)
+                        Text(summary.text)
+                            .lineLimit(2)
+                        Spacer()
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .tag(summary.id)
+            }
+
+            Divider()
+
+            HStack {
+                Button("Select All") {
+                    selectedMatchIndexes = Set(summaries.map(\.id))
+                }
+                Button("Clear Selection") {
+                    selectedMatchIndexes.removeAll()
+                }
+                Spacer()
+                Button("Close") { dismiss() }
+                Button("Mark for Redaction…") {
+                    appState.markSearchMatchesForRedaction(selectedMatchIndexes)
+                    dismiss()
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.red)
+                .disabled(selectedMatchIndexes.isEmpty || !appState.canRedactActiveDocument)
+            }
+            .padding(14)
+        }
+        .frame(minWidth: 560, minHeight: 420)
+        .onAppear {
+            if let active = search.activeMatchIndex { selectedMatchIndexes = [active] }
+        }
+    }
+}
+
+private struct AnnotationFormNavigatorSheet: View {
+    private enum Tab: String, CaseIterable, Identifiable {
+        case annotations = "Annotations"
+        case forms = "Form Fields"
+        var id: Self { self }
+    }
+
+    @EnvironmentObject private var appState: AppState
+    @Environment(\.dismiss) private var dismiss
+    @ObservedObject var editor: PDFDocumentEditor
+    @State private var tab: Tab = .annotations
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                SheetHeader(
+                    title: "Document Navigator",
+                    subtitle: "Jump to annotations and interactive form fields by page.",
+                    systemImage: "list.bullet.rectangle.portrait",
+                    tint: .purple
+                )
+                Spacer()
+            }
+            .padding(18)
+
+            Picker("Navigator", selection: $tab) {
+                ForEach(Tab.allCases) { Text($0.rawValue).tag($0) }
+            }
+            .pickerStyle(.segmented)
+            .padding(.horizontal, 18)
+            .padding(.bottom, 12)
+
+            Divider()
+
+            Group {
+                switch tab {
+                case .annotations: annotationList
+                case .forms: formList
+                }
+            }
+
+            Divider()
+            HStack {
+                Text(tab == .annotations
+                     ? "Only annotations created by PDFViewer can be deleted."
+                     : "Use Fill Form to edit writable field values.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("Close") { dismiss() }
+                    .keyboardShortcut(.defaultAction)
+            }
+            .padding(14)
+        }
+        .frame(minWidth: 580, minHeight: 440)
+    }
+
+    private var annotationList: some View {
+        List(editor.ownedAnnotations) { item in
+            HStack(spacing: 10) {
+                Button {
+                    appState.navigateToOwnedAnnotation(item)
+                } label: {
+                    HStack {
+                        Label(item.kind.title, systemImage: item.kind.systemImage)
+                            .frame(width: 150, alignment: .leading)
+                        Text(item.label).lineLimit(1)
+                        Spacer()
+                        Text("Page \(item.pageNumber)")
+                            .foregroundStyle(.secondary)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+
+                if item.isInk {
+                    Button(role: .destructive) {
+                        appState.deleteOwnedAnnotation(item)
+                    } label: {
+                        Image(systemName: "eraser")
+                    }
+                    .help("Delete this owned ink stroke")
+                }
+            }
+        }
+        .overlay {
+            if editor.ownedAnnotations.isEmpty {
+                ContentUnavailableView("No Owned Annotations", systemImage: "pencil.slash")
+            }
+        }
+    }
+
+    private var formList: some View {
+        List(editor.formFields) { field in
+            Button {
+                appState.navigateToFormField(field)
+            } label: {
+                HStack {
+                    Text(field.displayName)
+                    Spacer()
+                    Text(field.kind.rawValue.capitalized)
+                        .foregroundStyle(.secondary)
+                    Text("Page \(field.pageIndex + 1)")
+                        .foregroundStyle(.secondary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        }
+        .overlay {
+            if editor.formFields.isEmpty {
+                ContentUnavailableView("No Form Fields", systemImage: "list.bullet.rectangle")
+            }
+        }
+    }
+}
+
+private struct PDFComparisonSheet: View {
+    @EnvironmentObject private var appState: AppState
+    let primaryDocument: PDFDocument
+    let primaryName: String
+    let secondaryDocument: PDFDocument
+    let secondaryName: String
+    @State private var synchronizedPageIndex = 0
+    @State private var synchronizesPages = true
+    @State private var primaryPageIndex = 0
+    @State private var secondaryPageIndex = 0
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                SheetHeader(
+                    title: "Side-by-Side Comparison",
+                    systemImage: "rectangle.split.2x1",
+                    tint: .cyan
+                )
+                Spacer()
+                Toggle("Sync pages", isOn: $synchronizesPages)
+                    .toggleStyle(.switch)
+                Button("Close") { appState.pendingPDFComparison = nil }
+            }
+            .padding(14)
+            Divider()
+            HStack(spacing: 1) {
+                comparePane(document: primaryDocument, name: primaryName, isPrimary: true)
+                Divider()
+                comparePane(document: secondaryDocument, name: secondaryName, isPrimary: false)
+            }
+        }
+        .frame(minWidth: 900, minHeight: 650)
+        .onChange(of: synchronizedPageIndex) {
+            guard synchronizesPages else { return }
+            primaryPageIndex = min(synchronizedPageIndex, max(0, primaryDocument.pageCount - 1))
+            secondaryPageIndex = min(synchronizedPageIndex, max(0, secondaryDocument.pageCount - 1))
+        }
+    }
+
+    private func comparePane(document: PDFDocument, name: String, isPrimary: Bool) -> some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text(name).fontWeight(.semibold).lineLimit(1)
+                Spacer()
+                Text("Page \((isPrimary ? primaryPageIndex : secondaryPageIndex) + 1) of \(document.pageCount)")
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+            .padding(10)
+            Divider()
+            ComparePDFPane(
+                document: document,
+                pageIndex: isPrimary ? $primaryPageIndex : $secondaryPageIndex,
+                onVisiblePageChange: { index in
+                    if synchronizesPages {
+                        synchronizedPageIndex = index
+                    }
+                }
+            )
+        }
+    }
+}
+
+private struct ComparePDFPane: NSViewRepresentable {
+    let document: PDFDocument
+    @Binding var pageIndex: Int
+    let onVisiblePageChange: (Int) -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
+
+    func makeNSView(context: Context) -> PDFView {
+        let view = PDFView()
+        view.document = document
+        view.displayMode = .singlePageContinuous
+        view.displayDirection = .vertical
+        view.autoScales = true
+        context.coordinator.observe(view)
+        return view
+    }
+
+    func updateNSView(_ view: PDFView, context: Context) {
+        context.coordinator.parent = self
+        if view.document !== document { view.document = document }
+        guard
+            (0..<document.pageCount).contains(pageIndex),
+            let page = document.page(at: pageIndex),
+            view.currentPage !== page
+        else { return }
+        context.coordinator.isNavigatingProgrammatically = true
+        view.go(to: page)
+    }
+
+    @MainActor
+    final class Coordinator: NSObject {
+        var parent: ComparePDFPane
+        var isNavigatingProgrammatically = false
+        weak var view: PDFView?
+
+        init(parent: ComparePDFPane) { self.parent = parent }
+        func observe(_ view: PDFView) {
+            self.view = view
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(pageChanged(_:)),
+                name: .PDFViewPageChanged,
+                object: view
+            )
+        }
+        @objc private func pageChanged(_ note: Notification) {
+            guard
+                let view = note.object as? PDFView,
+                let document = view.document,
+                let page = view.currentPage
+            else { return }
+            let index = document.index(for: page)
+            guard index != NSNotFound else { return }
+            isNavigatingProgrammatically = false
+            parent.pageIndex = index
+            parent.onVisiblePageChange(index)
+        }
+        deinit { NotificationCenter.default.removeObserver(self) }
     }
 }
 
@@ -2043,7 +2961,11 @@ private struct PageOrganizerSheet: View {
             Divider()
             List(selection: selectionBinding) {
                 ForEach(0..<editor.document.pageCount, id: \.self) { pageIndex in
-                    OrganizerPageRow(document: editor.document, pageIndex: pageIndex)
+                    OrganizerPageRow(
+                        document: editor.document,
+                        pageIndex: pageIndex,
+                        displayLabel: state.pageLabel(for: pageIndex, in: editor.document)
+                    )
                         .tag(pageIndex)
                         .draggable(dragPayload(for: pageIndex))
                         .simultaneousGesture(
@@ -2115,9 +3037,12 @@ private struct PageOrganizerSheet: View {
     }
 
     private var organizerTitle: some View {
-        Text("Organize Pages")
-            .font(.title2.weight(.semibold))
-            .fixedSize(horizontal: true, vertical: false)
+        HStack(spacing: 10) {
+            IconBadge(systemImage: "square.grid.2x2", tint: .blue, size: 30)
+            Text("Organize Pages")
+                .font(.title3.weight(.semibold))
+        }
+        .fixedSize(horizontal: true, vertical: false)
     }
 
     private var organizerInstructions: some View {
@@ -2367,11 +3292,24 @@ private struct PageOrganizerSheet: View {
     }
 
     private func extractPagesButton(compact: Bool) -> some View {
-        Button {
-            appState.extractSelectedPages()
+        Menu {
+            Button("Selected Pages as PDF…") {
+                appState.extractSelectedPages()
+            }
+            Menu("Selected Pages as Images") {
+                ForEach(PDFImageExportFormat.allCases) { format in
+                    Button("\(format.title), 144 DPI…") {
+                        appState.exportPagesAsImages(
+                            pageIndexes: state.selectedPageIndexSet,
+                            format: format,
+                            dpi: 144
+                        )
+                    }
+                }
+            }
         } label: {
             organizerControlLabel(
-                "Extract Selected Pages…",
+                "Export Selected Pages…",
                 systemImage: "square.and.arrow.up",
                 compact: compact
             )
@@ -2379,7 +3317,7 @@ private struct PageOrganizerSheet: View {
         .disabled(!appState.canExtractFromActiveDocument || state.selectedPageIndexes.isEmpty)
         .help(
             appState.canExtractFromActiveDocument
-                ? "Extract the selected pages into a new PDF."
+                ? "Export the selected pages as a new PDF or a numbered image set."
                 : "The PDF's permissions do not allow both page assembly and content copying."
         )
     }
@@ -2575,9 +3513,12 @@ private struct ImportedPageSelectionSheet: View {
     }
 
     private var importedPageTitle: some View {
-        Text("Choose Pages to Add")
-            .font(.title2.weight(.semibold))
-            .fixedSize(horizontal: true, vertical: false)
+        HStack(spacing: 10) {
+            IconBadge(systemImage: "doc.badge.plus", tint: .green, size: 30)
+            Text("Choose Pages to Add")
+                .font(.title3.weight(.semibold))
+        }
+        .fixedSize(horizontal: true, vertical: false)
     }
 
     private var importedPageInstructions: some View {
@@ -2617,6 +3558,7 @@ private struct ImportedPageSelectionSheet: View {
 private struct OrganizerPageRow: View {
     let document: PDFDocument
     let pageIndex: Int
+    var displayLabel: String? = nil
 
     var body: some View {
         HStack(spacing: 12) {
@@ -2632,7 +3574,7 @@ private struct OrganizerPageRow: View {
                     .frame(width: 48, height: 64)
             }
 
-            Text("Page \(pageIndex + 1)")
+            Text(displayLabel.map { "Page \(pageIndex + 1) · \($0)" } ?? "Page \(pageIndex + 1)")
                 .fontWeight(.medium)
 
             Spacer()
@@ -2681,7 +3623,7 @@ private extension ReaderTheme {
         case .day:
             Color(red: 0.82, green: 0.82, blue: 0.82)
         case .night:
-            Color(red: 0.055, green: 0.055, blue: 0.06)
+            CatppuccinMocha.base
         case .sepia:
             Color(red: 0.70, green: 0.63, blue: 0.49)
         }

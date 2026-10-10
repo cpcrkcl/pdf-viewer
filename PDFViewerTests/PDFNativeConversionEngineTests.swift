@@ -89,6 +89,52 @@ final class PDFNativeConversionEngineTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: outputURLs[0]), Data("new".utf8))
     }
 
+    func testImageFileWritingReservesUniqueNamesWithinOneBatch() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let outputURLs = try PDFNativeConversionEngine.writeImageFiles(
+            [
+                PDFConvertedFile(filename: "Page.png", data: Data("first".utf8)),
+                PDFConvertedFile(filename: "Page.png", data: Data("second".utf8)),
+            ],
+            to: directory
+        )
+
+        XCTAssertEqual(outputURLs.map(\.lastPathComponent), ["Page.png", "Page-2.png"])
+        XCTAssertEqual(try Data(contentsOf: outputURLs[0]), Data("first".utf8))
+        XCTAssertEqual(try Data(contentsOf: outputURLs[1]), Data("second".utf8))
+    }
+
+    func testImagesToPDFRejectsDimensionsAboveSafePixelLimitBeforeDecoding() throws {
+        let bitmap = try XCTUnwrap(
+            NSBitmapImageRep(
+                bitmapDataPlanes: nil,
+                pixelsWide: 6_000,
+                pixelsHigh: 5_000,
+                bitsPerSample: 1,
+                samplesPerPixel: 1,
+                hasAlpha: false,
+                isPlanar: false,
+                colorSpaceName: .deviceWhite,
+                bytesPerRow: 750,
+                bitsPerPixel: 1
+            )
+        )
+        let oversizedTIFF = try XCTUnwrap(bitmap.representation(using: .tiff, properties: [:]))
+
+        XCTAssertThrowsError(
+            try PDFNativeConversionEngine.document(
+                from: [PDFImageInput(filename: "oversized.tiff", data: oversizedTIFF)]
+            )
+        ) { error in
+            XCTAssertEqual(
+                error as? PDFNativeConversionError,
+                .imageTooLarge("oversized.tiff")
+            )
+        }
+    }
+
     func testConversionFailuresAreTypedAndRecoverable() throws {
         let textDocument = try makeTextDocument(pages: ["Page"])
         XCTAssertThrowsError(

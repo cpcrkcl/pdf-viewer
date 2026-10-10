@@ -140,13 +140,16 @@ extension PDFExporting {
 struct PDFExporter: PDFExporting {
     private let fileManager: FileManager
     private let stagingDirectory: URL
+    private let validationFailure: (String) -> Void
 
     init(
         fileManager: FileManager = .default,
-        stagingDirectory: URL? = nil
+        stagingDirectory: URL? = nil,
+        validationFailure: @escaping (String) -> Void = { _ in }
     ) {
         self.fileManager = fileManager
         self.stagingDirectory = stagingDirectory ?? fileManager.temporaryDirectory
+        self.validationFailure = validationFailure
     }
 
     /// Stages and validates the PDF in app-owned storage, then coordinates one
@@ -197,12 +200,14 @@ struct PDFExporter: PDFExporting {
         guard resolvedSourceURL.path != resolvedDestinationURL.path else {
             throw PDFExportError.sourceAndDestinationMatch
         }
-
         let hasScopedAccess = destinationURL.startAccessingSecurityScopedResource()
         defer {
             if hasScopedAccess {
                 destinationURL.stopAccessingSecurityScopedResource()
             }
+        }
+        if resourcesReferToSameFile(resolvedSourceURL, resolvedDestinationURL) {
+            throw PDFExportError.sourceAndDestinationMatch
         }
 
         var isStagingDirectory: ObjCBool = false
@@ -305,21 +310,25 @@ struct PDFExporter: PDFExporting {
         sessionPassword: String?
     ) -> Bool {
         guard let outputDocument = PDFDocument(url: url) else {
+            validationFailure("Output could not be opened")
             return false
         }
 
         switch protection {
         case .none:
             guard !outputDocument.isEncrypted, !outputDocument.isLocked else {
+                validationFailure("Unexpected encryption")
                 return false
             }
         case .reuseSessionPassword:
             guard outputDocument.isEncrypted, let sessionPassword else {
+                validationFailure("Missing encryption or session password")
                 return false
             }
 
             if !sessionPassword.isEmpty {
                 guard outputDocument.isLocked else {
+                    validationFailure("Encrypted output was not locked")
                     return false
                 }
                 let incorrectPassword = sessionPassword == "pdfviewer-incorrect-password"
@@ -329,20 +338,33 @@ struct PDFExporter: PDFExporting {
                     let incorrectAttempt = PDFDocument(url: url),
                     !incorrectAttempt.unlock(withPassword: incorrectPassword)
                 else {
+                    validationFailure("Incorrect password accepted")
                     return false
                 }
             }
 
             guard outputDocument.unlock(withPassword: sessionPassword) else {
+                validationFailure("Session password rejected")
                 return false
             }
         }
 
-        guard
-            validationSnapshot(of: outputDocument) == expectedSnapshot,
-            let data = outputDocument.dataRepresentation(),
-            !data.isEmpty
-        else {
+        let actualSnapshot = validationSnapshot(of: outputDocument)
+        guard expectedSnapshot.pages.count == expectedSnapshot.pageCount,
+              actualSnapshot.pageCount == expectedSnapshot.pageCount,
+              actualSnapshot.pages.count == expectedSnapshot.pages.count else {
+            validationFailure("Page count mismatch")
+            return false
+        }
+        for (index, pair) in zip(expectedSnapshot.pages, actualSnapshot.pages).enumerated() {
+            let (expected, actual) = pair
+            guard expected == actual else {
+                validationFailure("Page \(index): rotation matches=\(expected.rotation == actual.rotation), crop matches=\(expected.cropBounds == actual.cropBounds), text matches=\(expected.text == actual.text), annotations match=\(expected.annotations == actual.annotations)")
+                return false
+            }
+        }
+        guard let data = outputDocument.dataRepresentation(), !data.isEmpty else {
+            validationFailure("Output serialization failed")
             return false
         }
         return true
@@ -350,6 +372,7 @@ struct PDFExporter: PDFExporting {
 
     private func validationSnapshot(of document: PDFDocument) -> ValidationSnapshot {
         ValidationSnapshot(
+            pageCount: document.pageCount,
             pages: (0..<document.pageCount).compactMap { pageIndex in
                 guard let page = document.page(at: pageIndex) else {
                     return nil
@@ -357,7 +380,7 @@ struct PDFExporter: PDFExporting {
                 return ValidationPage(
                     rotation: page.rotation,
                     cropBounds: page.bounds(for: .cropBox),
-                    text: page.string,
+                    text: Self.validationText(page.string),
                     annotations: page.annotations
                         .filter { $0.type != PDFAnnotationSubtype.popup.pdfTypeName }
                         .map { annotation in
@@ -391,16 +414,41 @@ struct PDFExporter: PDFExporting {
             }
         )
     }
+
+    /// PDFKit can change empty text and page-boundary separators after a write.
+    /// Keep internal whitespace and every non-whitespace character significant.
+    static func validationText(_ text: String?) -> String {
+        (text ?? "")
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func resourcesReferToSameFile(_ firstURL: URL, _ secondURL: URL) -> Bool {
+        guard
+            fileManager.fileExists(atPath: secondURL.path),
+            let firstIdentifier = try? firstURL.resourceValues(
+                forKeys: [.fileResourceIdentifierKey]
+            ).fileResourceIdentifier as? NSObject,
+            let secondIdentifier = try? secondURL.resourceValues(
+                forKeys: [.fileResourceIdentifierKey]
+            ).fileResourceIdentifier as? NSObject
+        else {
+            return false
+        }
+        return firstIdentifier.isEqual(secondIdentifier)
+    }
 }
 
 private struct ValidationSnapshot: Equatable {
+    let pageCount: Int
     let pages: [ValidationPage]
 }
 
 private struct ValidationPage: Equatable {
     let rotation: Int
     let cropBounds: CGRect
-    let text: String?
+    let text: String
     let annotations: [ValidationAnnotation]
 }
 

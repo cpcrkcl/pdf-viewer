@@ -1,5 +1,6 @@
 import Combine
 import Foundation
+@preconcurrency import PDFKit
 
 enum ReaderDisplayMode: String, CaseIterable, Identifiable {
     case singlePage
@@ -32,6 +33,25 @@ enum ReaderTheme: String, CaseIterable, Identifiable {
     }
 }
 
+enum PageLabelStyle: String, CaseIterable, Identifiable {
+    case document
+    case decimal
+    case romanUpper
+    case romanLower
+    case letters
+
+    var id: Self { self }
+    var title: String {
+        switch self {
+        case .document: "Document Labels"
+        case .decimal: "Decimal"
+        case .romanUpper: "Roman (I, II, III)"
+        case .romanLower: "Roman (i, ii, iii)"
+        case .letters: "Letters (A, B, C)"
+        }
+    }
+}
+
 enum ReaderZoomAction: Equatable {
     case fit
     case zoomIn
@@ -52,6 +72,9 @@ final class ReaderState: ObservableObject {
     @Published var theme: ReaderTheme
     @Published var isReaderSidebarVisible: Bool
     @Published var selectedSidebarTab: ReaderSidebarTab
+    @Published var pageLabelStyle: PageLabelStyle
+    @Published var pageLabelStart: Int
+    @Published var pageLabelPrefix: String
     @Published private(set) var isDocumentDirty: Bool
     @Published private(set) var zoomRequest: ReaderZoomRequest
     @Published private(set) var printRequestSequence: Int
@@ -62,9 +85,12 @@ final class ReaderState: ObservableObject {
         self.selectedPageIndex = 0
         self.selectedPageIndexes = safePageCount > 0 ? [0] : []
         self.displayMode = .continuous
-        self.theme = .day
+        self.theme = .night
         self.isReaderSidebarVisible = true
         self.selectedSidebarTab = .thumbnails
+        self.pageLabelStyle = .document
+        self.pageLabelStart = 1
+        self.pageLabelPrefix = ""
         self.isDocumentDirty = false
         self.zoomRequest = ReaderZoomRequest(sequence: 0, action: .fit)
         self.printRequestSequence = 0
@@ -120,9 +146,12 @@ final class ReaderState: ObservableObject {
     func reset(pageCount: Int) {
         synchronize(pageCount: pageCount, isDirty: false)
         displayMode = .continuous
-        theme = .day
+        theme = .night
         isReaderSidebarVisible = true
         selectedSidebarTab = .thumbnails
+        pageLabelStyle = .document
+        pageLabelStart = 1
+        pageLabelPrefix = ""
         requestZoom(.fit)
     }
 
@@ -205,5 +234,42 @@ final class ReaderState: ObservableObject {
 
     func toggleThumbnailSidebar() {
         toggleReaderSidebar()
+    }
+
+    func pageLabel(for index: Int, in document: PDFDocument) -> String {
+        guard (0..<document.pageCount).contains(index) else { return "" }
+        if pageLabelStyle == .document {
+            return document.page(at: index)?.label ?? "\(index + 1)"
+        }
+        let value = max(1, pageLabelStart + index)
+        let body: String = switch pageLabelStyle {
+        case .document, .decimal: "\(value)"
+        case .romanUpper: Self.roman(value)
+        case .romanLower: Self.roman(value).lowercased()
+        case .letters: Self.letters(value)
+        }
+        return String(pageLabelPrefix.prefix(20)) + body
+    }
+
+    private static func roman(_ value: Int) -> String {
+        guard value <= 3999 else { return "\(value)" }
+        let symbols = [(1000,"M"),(900,"CM"),(500,"D"),(400,"CD"),(100,"C"),(90,"XC"),(50,"L"),(40,"XL"),(10,"X"),(9,"IX"),(5,"V"),(4,"IV"),(1,"I")]
+        var remaining = value
+        var result = ""
+        for (number, symbol) in symbols {
+            while remaining >= number { result += symbol; remaining -= number }
+        }
+        return result
+    }
+
+    private static func letters(_ value: Int) -> String {
+        var remaining = value
+        var result = ""
+        while remaining > 0 {
+            remaining -= 1
+            result = String(UnicodeScalar(65 + remaining % 26)!) + result
+            remaining /= 26
+        }
+        return result
     }
 }

@@ -353,6 +353,24 @@ final class ReaderSplitViewTests: XCTestCase {
         XCTAssertFalse(annotations.hasTextSelection)
     }
 
+    func testCustomPageLabelsSupportRomanLettersPrefixAndStart() {
+        let document = PDFDocument()
+        for index in 0..<3 { document.insert(PDFPage(), at: index) }
+        let state = ReaderState(pageCount: 3)
+
+        state.pageLabelStyle = .romanUpper
+        state.pageLabelStart = 4
+        state.pageLabelPrefix = "A-"
+        XCTAssertEqual(state.pageLabel(for: 0, in: document), "A-IV")
+        XCTAssertEqual(state.pageLabel(for: 2, in: document), "A-VI")
+
+        state.pageLabelStyle = .letters
+        state.pageLabelStart = 26
+        state.pageLabelPrefix = ""
+        XCTAssertEqual(state.pageLabel(for: 0, in: document), "Z")
+        XCTAssertEqual(state.pageLabel(for: 1, in: document), "AA")
+    }
+
     private func makeSplitView(width: CGFloat, pageCount: Int = 1) -> ReaderSplitView {
         let document = PDFDocument()
         for pageIndex in 0..<pageCount {

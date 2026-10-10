@@ -10,6 +10,7 @@ final class SharedServices: ObservableObject {
     let recentDocuments: RecentDocumentsStore
     let bookmarkStore: PageBookmarkStore
     let signatureLibrary: SignatureLibrary
+    let stampLibrary: SignatureLibrary
     let pdfExporter: any PDFExporting
     let loadDocumentsAsynchronously: Bool
 
@@ -18,6 +19,7 @@ final class SharedServices: ObservableObject {
         recentDocuments: RecentDocumentsStore = RecentDocumentsStore(),
         bookmarkStore: PageBookmarkStore = PageBookmarkStore(),
         signatureLibrary: SignatureLibrary = SignatureLibrary(),
+        stampLibrary: SignatureLibrary = SignatureLibrary(libraryFolder: "Stamps"),
         pdfExporter: any PDFExporting = PDFExporter(),
         loadDocumentsAsynchronously: Bool = true
     ) {
@@ -25,6 +27,7 @@ final class SharedServices: ObservableObject {
         self.recentDocuments = recentDocuments
         self.bookmarkStore = bookmarkStore
         self.signatureLibrary = signatureLibrary
+        self.stampLibrary = stampLibrary
         self.pdfExporter = pdfExporter
         self.loadDocumentsAsynchronously = loadDocumentsAsynchronously
     }
@@ -35,6 +38,7 @@ final class SharedServices: ObservableObject {
             recentDocuments: recentDocuments,
             bookmarkStore: bookmarkStore,
             signatureLibrary: signatureLibrary,
+            stampLibrary: stampLibrary,
             pdfExporter: pdfExporter,
             loadDocumentsAsynchronously: loadDocumentsAsynchronously
         )
